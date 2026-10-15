@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="280" viewBox="0 0 1200 280" role="img" aria-labelledby="layout-title layout-desc">
+  <title id="layout-title">Three parts of the window</title>
+  <desc id="layout-desc">Tunnels, terminal output, and Tailscale hosts.</desc>
+  <rect width="1200" height="280" fill="#efece6"/>
+  <g font-family="PingFang SC, Hiragino Sans GB, sans-serif" fill="#1a1916">
+    <rect x="64" y="48" width="320" height="184" fill="#e2ddd4"/>
+    <text x="88" y="110" font-size="32" font-weight="600">&#38567;&#36947;</text>
+    <text x="88" y="164" font-size="22">3430 &#8594; 127.0.0.1:3430</text>
+    <rect x="440" y="48" width="320" height="184" fill="#141414"/>
+    <text x="464" y="110" fill="#f4f1ea" font-size="32" font-weight="600">&#32456;&#31471;</text>
+    <text x="464" y="164" fill="#f4f1ea" font-size="22">ssh &#36755;&#20986;</text>
+    <rect x="816" y="48" width="320" height="184" fill="#e2ddd4"/>
+    <text x="840" y="110" font-size="32" font-weight="600">Tailscale</text>
+    <text x="840" y="164" font-size="22">Online / Offline</text>
+  </g>
+</svg>

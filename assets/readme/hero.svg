@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="380" viewBox="0 0 1200 380" role="img" aria-labelledby="hero-title hero-desc">
+  <title id="hero-title">TailTunnel</title>
+  <desc id="hero-desc">A Mac window that starts and stops SSH local port forwards, with the terminal under the list.</desc>
+  <rect width="1200" height="380" fill="#efece6"/>
+  <text x="64" y="128" fill="#6b6560" font-family="PingFang SC, Hiragino Sans GB, sans-serif" font-size="22">Mac &#183; SSH local forward</text>
+  <text x="64" y="196" fill="#1a1916" font-family="PingFang SC, Hiragino Sans GB, sans-serif" font-size="64" font-weight="700">TailTunnel</text>
+  <text x="64" y="252" fill="#1a1916" font-family="PingFang SC, Hiragino Sans GB, sans-serif" font-size="26">&#24320;&#20851;&#22810;&#26465;&#26412;&#22320;&#31471;&#21475;&#36716;&#21457;</text>
+  <g transform="translate(700 48)">
+    <rect width="436" height="284" fill="#e2ddd4"/>
+    <rect width="92" height="284" fill="#d7d2c8"/>
+    <rect x="16" y="28" width="60" height="28" fill="#1a1916"/>
+    <text x="28" y="48" fill="#f4f1ea" font-family="PingFang SC, sans-serif" font-size="16">&#38567;&#36947;</text>
+    <text x="20" y="92" fill="#1a1916" font-family="PingFang SC, sans-serif" font-size="16">Tailscale</text>
+    <rect x="108" y="72" width="312" height="56" fill="#efece6"/>
+    <circle cx="128" cy="100" r="6" fill="#1c8a4a"/>
+    <text x="144" y="96" fill="#1a1916" font-family="ui-monospace, Menlo, monospace" font-size="16">root@100.68.115.34</text>
+    <text x="144" y="116" fill="#6b6560" font-family="ui-monospace, Menlo, monospace" font-size="14">3430 &#8594; 127.0.0.1:3430</text>
+    <rect x="108" y="148" width="312" height="112" fill="#141414"/>
+    <text x="124" y="180" fill="#f4f1ea" font-family="ui-monospace, Menlo, monospace" font-size="14">Local forwarding listening</text>
+    <text x="124" y="204" fill="#f4f1ea" font-family="ui-monospace, Menlo, monospace" font-size="14">on 127.0.0.1 port 3430</text>
+  </g>
+</svg>
