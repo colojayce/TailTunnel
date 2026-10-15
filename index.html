@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="stylesheet" href="/src/styles.css" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>TailTunnel</title>
+    <script type="module" src="/src/list.ts" defer></script>
+  </head>
+  <body data-view="tunnels">
+    <div class="shell">
+    <nav class="nav" aria-label="菜单">
+      <button id="nav-tunnels" class="nav-item current" type="button">隧道</button>
+      <button id="nav-tailscale" class="nav-item" type="button">Tailscale</button>
+      <button id="nav-settings" class="nav-item" type="button">设置</button>
+    </nav>
+    <div class="workspace">
+    <header class="top">
+      <p id="summary" class="info" role="status">正在读取</p>
+      <p class="brand">TailTunnel</p>
+      <div class="top-actions">
+        <button id="create" class="primary" type="button">新建</button>
+      </div>
+    </header>
+    <div id="view-tunnels" class="view">
+    <div id="list" class="list"></div>
+    <section class="dock idle" aria-label="终端">
+      <header class="dock-top">
+        <div>
+          <p id="dock-title"></p>
+          <p id="dock-meta" class="quiet"></p>
+        </div>
+        <p id="dock-status" class="status stopped"></p>
+      </header>
+      <pre id="output" class="output"></pre>
+    </section>
+    </div>
+    <section id="view-tailscale" class="panel" hidden>
+      <div class="panel-head">
+        <h2>Tailscale</h2>
+        <button id="refresh-tailscale" type="button">刷新</button>
+      </div>
+      <div id="tailscale-body"></div>
+    </section>
+    <section id="view-settings" class="panel" hidden>
+      <h2>设置</h2>
+      <div class="setting-row">
+        <span>配置文件</span>
+        <p id="settings-path" class="path"></p>
+        <button id="pick-config" type="button">更改</button>
+      </div>
+      <p id="settings-error" class="form-error" hidden></p>
+    </section>
+    </div>
+    </div>
+
+    <dialog id="editor" class="sheet">
+      <form id="editor-form" method="dialog">
+        <header class="sheet-head">
+          <h2 id="editor-title">新建隧道</h2>
+        </header>
+        <div class="sheet-body">
+        <p id="editor-note" class="quiet"></p>
+        <div class="fields">
+          <label>
+            主机
+            <input id="host" name="host" autocomplete="off" required />
+          </label>
+          <label>
+            SSH 端口
+            <input id="ssh-port" name="port" type="number" min="1" max="65535" value="22" required />
+          </label>
+          <label>
+            用户
+            <input id="user" name="user" autocomplete="off" required />
+          </label>
+          <label>
+            密码
+            <span class="password-line">
+              <input id="password" name="password" type="password" autocomplete="off" />
+              <button id="toggle-password" type="button">显示</button>
+            </span>
+          </label>
+        </div>
+        <div class="forward-head">
+          <span>本地转发</span>
+          <button id="add-forward" type="button">加一行</button>
+        </div>
+        <div id="forwards" class="forwards"></div>
+        <p id="form-error" class="form-error" hidden></p>
+        </div>
+        <footer class="sheet-foot">
+          <button id="delete-tunnel" class="danger" type="button" hidden>删除</button>
+          <span class="spacer"></span>
+          <button id="cancel-edit" type="button" value="cancel">取消</button>
+          <button class="primary" type="submit">保存</button>
+        </footer>
+      </form>
+    </dialog>
+
+  </body>
+</html>

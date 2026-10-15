@@ -1,0 +1,501 @@
+:root {
+  --bg: #efece6;
+  --surface: #e2ddd4;
+  --ink: #1a1916;
+  --muted: #6b6560;
+  --accent: #24338f;
+  --accent-ink: #ffffff;
+  --live: #1c8a4a;
+  --stop: #c4272b;
+  --terminal: #141414;
+  --on-terminal: #f4f1ea;
+  --step-small: 14px;
+  --step-body: 20px;
+  --step-head: 28px;
+  color: var(--ink);
+  background: var(--bg);
+  font-family: "Red Hat Text", "PingFang SC", "Hiragino Sans GB", sans-serif;
+  font-size: 17px;
+  line-height: 1.5;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  height: 100vh;
+  overflow: hidden;
+  color: var(--ink);
+  background: var(--bg);
+}
+
+.shell { display: flex; height: 100%; }
+
+.nav {
+  width: 9.75rem;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  padding: 0.85rem 0.5rem;
+  background: var(--surface);
+}
+
+.nav-item {
+  height: auto;
+  padding: 0.55rem 0.7rem;
+  text-align: left;
+  font-size: 16px;
+  font-weight: 500;
+}
+
+.nav-item.current,
+.nav-item.current:hover {
+  background: var(--ink);
+  color: var(--bg);
+}
+
+.workspace {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.view {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.panel {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 0.35rem 1.25rem 1.5rem;
+}
+
+.view[hidden],
+.panel[hidden] { display: none; }
+
+body:not([data-view="tunnels"]) #summary,
+body:not([data-view="tunnels"]) #create { visibility: hidden; }
+
+.nav-item:hover { background: var(--bg); }
+
+.panel h2 {
+  margin: 0.35rem 0 1rem;
+  font-size: var(--step-body);
+  font-weight: 500;
+  letter-spacing: 0;
+  line-height: 1.35;
+}
+
+.panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.panel-head h2 { margin-bottom: 0; }
+
+.notice { max-width: 28rem; margin: 0.4rem 0 1rem; font-size: var(--step-body); line-height: 1.45; }
+
+.machine {
+  display: grid;
+  grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr) max-content;
+  width: 100%;
+  min-width: 0;
+  gap: 0.75rem 1.25rem;
+  align-items: baseline;
+  padding: 0.35rem 0.4rem;
+  font-size: var(--step-body);
+  line-height: 1.45;
+}
+
+.machine.live { background: var(--surface); }
+.machine .status.running { color: var(--live); }
+
+.machine-name,
+.machine-address {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  min-width: 0;
+}
+
+button.here {
+  height: 1.55rem;
+  padding: 0 0.45rem;
+  background: var(--ink);
+  color: var(--bg);
+  font-size: 13px;
+  line-height: 1;
+}
+
+button.here:hover { background: var(--ink); color: var(--bg); }
+
+button.copy {
+  width: 1.35rem;
+  height: 1.35rem;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  color: var(--muted);
+}
+
+button.copy:hover { background: transparent; color: var(--accent); }
+
+button, input { font: inherit; color: inherit; }
+
+button {
+  height: 2.25rem;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  padding: 0 0.85rem;
+  cursor: pointer;
+  font-size: var(--step-small);
+  font-weight: 500;
+}
+
+button:hover { background: var(--surface); }
+button:active { transform: translateY(1px); }
+button:focus-visible, input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+button.primary {
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+
+button.primary:hover { background: #1c2870; }
+
+button.danger { color: var(--ink); padding-left: 0; }
+button.danger:hover { background: transparent; color: var(--accent); }
+
+button.icon {
+  width: 2.25rem;
+  padding: 0;
+  background: var(--surface);
+  font-size: 1.25rem;
+  line-height: 1;
+  font-weight: 400;
+}
+
+button.icon:disabled { opacity: 0.35; cursor: default; }
+
+.top {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  gap: 1rem;
+  min-height: 4.5rem;
+  padding: 0.85rem 1.25rem 0.7rem;
+}
+
+.brand {
+  margin: 0;
+  font-family: "Red Hat Display", "Red Hat Text", sans-serif;
+  font-weight: 900;
+  font-size: var(--step-head);
+  letter-spacing: -0.03em;
+  line-height: 0.92;
+  text-align: center;
+  text-transform: uppercase;
+}
+
+.info {
+  justify-self: start;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  height: 2rem;
+  margin: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--ink);
+  font-size: var(--step-small);
+  font-weight: 500;
+  line-height: 1;
+}
+
+.info::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--muted);
+  flex-shrink: 0;
+}
+
+.info:not(.live) { color: var(--muted); }
+.info.live { color: var(--ink); }
+.info.live::before { background: var(--live); }
+.info.bad { color: var(--ink); }
+.info.bad::before { background: var(--stop); }
+
+.top > .top-actions { justify-self: end; }
+
+.top-actions, .forward-head, .password-line, .sheet-foot {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.list {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding: 0.5rem 1.25rem 1.25rem;
+}
+
+.select-bar { display: none; }
+
+.row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.3fr) minmax(0, 1.8fr) max-content max-content max-content;
+  width: 100%;
+  min-width: 0;
+  gap: 0.75rem 1rem;
+  align-items: baseline;
+  padding: 0.35rem 0.4rem;
+  font-size: var(--step-body);
+  font-weight: 400;
+  line-height: 1.45;
+}
+
+.row.selected { background: var(--surface); }
+
+.row-main {
+  display: contents;
+  border: 0;
+  background: transparent;
+  height: auto;
+  padding: 0;
+  text-align: left;
+  font-weight: 400;
+  font-size: inherit;
+}
+
+.row-main:hover, .row-main:active { background: transparent; transform: none; }
+
+.lamp { display: none; }
+
+.row-text { display: contents; }
+
+.identity { grid-column: 1; grid-row: 1; }
+.detail { grid-column: 2; grid-row: 1; color: var(--muted); }
+.identity, .detail {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.message {
+  grid-column: 2;
+  grid-row: 2;
+  color: var(--ink);
+  font-size: var(--step-small);
+}
+
+.status { grid-column: 3; grid-row: 1; white-space: nowrap; }
+.status.stopped, .status.failed { color: var(--muted); }
+
+.row > button:not(.row-main) {
+  grid-row: 1;
+  height: auto;
+  padding: 0;
+  background: transparent;
+  font-size: inherit;
+  font-weight: 400;
+}
+
+.row > button:hover { background: transparent; color: var(--accent); }
+.row > button.stop { color: var(--stop); }
+.row > button.stop:hover { color: #9b1c22; background: transparent; }
+
+.empty {
+  margin: 1.5rem 0;
+  font-size: var(--step-body);
+}
+
+.dock {
+  flex: 0 1 36%;
+  min-height: 11rem;
+  max-height: 42%;
+  display: flex;
+  flex-direction: column;
+  background: var(--terminal);
+  color: var(--on-terminal);
+}
+
+.dock.idle { display: none; }
+
+.dock-top {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+  min-width: 0;
+  padding: 0.9rem 1.25rem 0.2rem;
+}
+
+.dock-top > div { min-width: 0; }
+
+.dock-top:has(#dock-title:empty) { display: none; }
+
+#dock-title {
+  margin: 0;
+  font-size: var(--step-body);
+  font-weight: 500;
+  line-height: 1.35;
+}
+
+.dock .quiet {
+  margin: 0.25rem 0 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--on-terminal);
+  font-size: var(--step-small);
+  font-variant-numeric: tabular-nums;
+}
+
+.dock .status { color: var(--on-terminal); font-size: var(--step-small); }
+.dock .status.stopped, .dock .status.failed { color: var(--on-terminal); opacity: 0.7; }
+
+.output {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  margin: 0.6rem 1.25rem 1rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: "Red Hat Text", "PingFang SC", sans-serif;
+  font-size: 16px;
+  line-height: 1.5;
+  font-variant-numeric: tabular-nums;
+}
+
+dialog {
+  width: min(40rem, calc(100vw - 3rem));
+  max-height: min(36rem, calc(100vh - 3rem));
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: var(--terminal);
+  color: var(--bg);
+  box-shadow: 0 28px 60px rgba(11, 11, 11, 0.35);
+}
+
+dialog form {
+  display: flex;
+  flex-direction: column;
+  max-height: min(36rem, calc(100vh - 3rem));
+}
+
+dialog::backdrop { background: rgba(11, 11, 11, 0.45); }
+
+.sheet-head, .sheet-foot { padding: 1rem 1.25rem; }
+.sheet-head h2, dialog h2 {
+  margin: 0;
+  font-family: "Red Hat Display", "Red Hat Text", sans-serif;
+  font-weight: 900;
+  font-size: var(--step-head);
+  letter-spacing: -0.03em;
+  line-height: 0.95;
+  text-transform: uppercase;
+}
+
+.sheet-body { overflow: auto; padding: 0.4rem 1.25rem 1.25rem; }
+.sheet-body .quiet { margin: 0 0 1rem; color: var(--bg); font-size: 16px; }
+
+.fields {
+  display: grid;
+  grid-template-columns: 1.4fr 0.7fr;
+  gap: 0.9rem 1rem;
+}
+
+label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  font-size: var(--step-small);
+  color: var(--bg);
+}
+
+input {
+  height: 2.25rem;
+  border: 0;
+  border-radius: 0;
+  background: var(--bg);
+  color: var(--ink);
+  padding: 0 0.6rem;
+  width: 100%;
+  font-size: 16px;
+  caret-color: var(--accent);
+}
+
+input[type="number"] { appearance: textfield; }
+input[type="number"]::-webkit-outer-spin-button,
+input[type="number"]::-webkit-inner-spin-button { appearance: none; margin: 0; }
+
+.password-line input { flex: 1; width: auto; }
+
+.forward-head {
+  justify-content: space-between;
+  margin: 1.25rem 0 0.5rem;
+  font-size: var(--step-small);
+}
+
+.forward-row {
+  display: grid;
+  grid-template-columns: 0.8fr 1.2fr 0.8fr auto;
+  gap: 0.45rem;
+  margin-bottom: 0.45rem;
+  align-items: center;
+}
+
+.setting-row {
+  display: grid;
+  grid-template-columns: 5.5rem minmax(0, 1fr) auto;
+  gap: 0.8rem;
+  align-items: center;
+  font-size: 16px;
+}
+
+.path {
+  margin: 0;
+  word-break: break-all;
+  font-size: 16px;
+  line-height: 1.45;
+}
+
+.form-error { margin: 0.8rem 0 0; font-size: 16px; }
+.spacer { flex: 1; }
+
+dialog button:hover { background: rgba(244, 241, 234, 0.12); }
+dialog button.primary:hover { background: #1c2870; }
+dialog button.icon { background: var(--bg); color: var(--ink); }
+dialog button.icon:hover { background: var(--surface); }
+
+#editor-note:empty, #dock-meta:empty, #dock-status:empty { display: none; }
+
+::selection { background: #24338f; color: #ffffff; }
+
+@media (prefers-reduced-motion: reduce) {
+  button { transition: none; }
+}

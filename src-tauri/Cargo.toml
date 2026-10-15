@@ -1,0 +1,27 @@
+[package]
+name = "tailtunnel"
+version = "0.1.0"
+description = "在 Mac 上开关多条 SSH 本地转发"
+authors = ["you"]
+edition = "2024"
+
+[lib]
+name = "tailtunnel_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+libc = "0.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = 3
+panic = "abort"
+strip = true
