@@ -28,9 +28,13 @@
       <header class="dock-top">
         <div>
           <p id="dock-title"></p>
-          <p id="dock-meta" class="quiet"></p>
+          <div id="dock-meta" class="quiet"></div>
         </div>
-        <p id="dock-status" class="status stopped"></p>
+        <div class="dock-side">
+          <p id="dock-status" class="status stopped"></p>
+          <button id="copy-tunnel" type="button">复制</button>
+          <button id="export-tunnel" type="button">导出</button>
+        </div>
       </header>
       <pre id="output" class="output"></pre>
     </section>
@@ -64,12 +68,16 @@
         <div class="fields">
           <label>
             主机
-            <input id="host" name="host" autocomplete="off" required />
+            <span class="host-line">
+              <input id="host" name="host" autocomplete="off" required />
+              <button id="pick-host" type="button">选择</button>
+            </span>
           </label>
           <label>
             SSH 端口
             <input id="ssh-port" name="port" type="number" min="1" max="65535" value="22" required />
           </label>
+          <div id="host-picks" class="host-picks" hidden></div>
           <label>
             用户
             <input id="user" name="user" autocomplete="off" required />
@@ -91,6 +99,8 @@
         </div>
         <footer class="sheet-foot">
           <button id="delete-tunnel" class="danger" type="button" hidden>删除</button>
+          <button id="copy-tunnel-edit" type="button" hidden>复制</button>
+          <button id="export-tunnel-edit" type="button" hidden>导出</button>
           <span class="spacer"></span>
           <button id="cancel-edit" type="button" value="cancel">取消</button>
           <button class="primary" type="submit">保存</button>

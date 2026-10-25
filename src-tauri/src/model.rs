@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::io::Write;
 use std::path::Path;
 
 pub const MAX_LOG_CHARS: usize = 80_000;
@@ -15,6 +16,7 @@ pub struct Forward {
 #[serde(rename_all = "camelCase")]
 pub enum TunnelStatus {
     Stopped,
+    Connecting,
     Running,
     Failed,
 }
@@ -41,6 +43,7 @@ pub struct TunnelView {
     pub forwards: Vec<Forward>,
     pub status: TunnelStatus,
     pub message: Option<String>,
+    pub connected_at: Option<u64>,
 }
 
 #[derive(Clone, Serialize)]
@@ -49,6 +52,18 @@ pub struct Snapshot {
     pub tunnels: Vec<TunnelView>,
     pub selected_id: Option<String>,
     pub config_path: String,
+}
+
+#[derive(Clone, Serialize)]
+pub struct LogEntry {
+    pub seq: u64,
+    pub line: String,
+}
+
+#[derive(Clone, Serialize)]
+pub struct LogPage {
+    pub floor: u64,
+    pub lines: Vec<LogEntry>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -98,16 +113,71 @@ pub fn save_store(dir: &Path, tunnels: &[Tunnel]) -> Result<(), String> {
 }
 
 pub fn save_store_at(path: &Path, tunnels: &[Tunnel]) -> Result<(), String> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| format!("创建配置目录失败：{e}"))?;
-    }
     let text = serde_json::to_string_pretty(&FileStore {
         tunnels: tunnels.to_vec(),
     })
     .map_err(|e| format!("写入配置失败：{e}"))?;
-    std::fs::write(path, text).map_err(|e| format!("写入配置失败：{e}"))?;
+    write_private_atomic(path, &text)
+}
+
+pub fn tunnel_export(tunnel: &Tunnel) -> Result<String, String> {
+    #[derive(Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Document<'a> {
+        host: &'a str,
+        port: u16,
+        user: &'a str,
+        password: &'a str,
+        forwards: &'a [Forward],
+    }
+    serde_json::to_string_pretty(&Document {
+        host: &tunnel.host,
+        port: tunnel.port,
+        user: &tunnel.user,
+        password: &tunnel.password,
+        forwards: &tunnel.forwards,
+    })
+    .map_err(|e| format!("导出失败：{e}"))
+}
+
+pub fn write_private_atomic(path: &Path, text: &str) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent).map_err(|e| format!("创建配置目录失败：{e}"))?;
+        }
+    }
+    let tmp = beside_temp(path);
+    let _ = std::fs::remove_file(&tmp);
+    let write_result = (|| -> Result<(), String> {
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options.open(&tmp).map_err(|e| format!("写入配置失败：{e}"))?;
+        file.write_all(text.as_bytes())
+            .map_err(|e| format!("写入配置失败：{e}"))?;
+        file.sync_all().map_err(|e| format!("写入配置失败：{e}"))?;
+        Ok(())
+    })();
+    if let Err(error) = write_result {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(error);
+    }
+    if let Err(error) = std::fs::rename(&tmp, path) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(format!("写入配置失败：{error}"));
+    }
     set_private(path);
     Ok(())
+}
+
+fn beside_temp(path: &Path) -> std::path::PathBuf {
+    let mut file_name = path.file_name().unwrap_or_default().to_os_string();
+    file_name.push(".tmp");
+    path.with_file_name(file_name)
 }
 
 pub fn set_private(path: &Path) {
@@ -282,5 +352,41 @@ mod tests {
         assert_eq!(loaded[0].password, "s3cret");
         assert_eq!(loaded[0].forwards.len(), 2);
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn save_replaces_a_broken_file_and_leaves_no_temp() {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("tailtunnel-atomic-{nanos}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = config_file(&dir);
+        std::fs::write(&path, "{").unwrap();
+        let mut tunnel = validate_draft(&sample_draft()).unwrap();
+        tunnel.id = "a".into();
+        save_store_at(&path, &[tunnel]).unwrap();
+        assert!(!beside_temp(&path).exists());
+        let loaded = load_store_at(&path).unwrap();
+        assert_eq!(loaded[0].password, "s3cret");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600);
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn export_document_is_one_tunnel() {
+        let tunnel = validate_draft(&sample_draft()).unwrap();
+        let text = tunnel_export(&tunnel).unwrap();
+        assert!(text.contains("\"host\": \"100.68.115.34\""));
+        assert!(text.contains("\"password\": \"s3cret\""));
+        assert!(text.contains("\"localPort\": 3430"));
+        assert!(!text.contains("\"id\""));
+        assert!(!text.contains("\"status\""));
     }
 }

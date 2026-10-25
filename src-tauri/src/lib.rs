@@ -3,7 +3,7 @@ mod model;
 mod tailscale;
 
 use manager::{signal_pid, Running, TunnelManager};
-use model::{Snapshot, TunnelDraft};
+use model::{write_private_atomic, Snapshot, TunnelDraft};
 use std::io::{BufRead, BufReader, Read};
 use std::process::{Command, Stdio};
 use std::sync::{Mutex, MutexGuard};
@@ -26,7 +26,7 @@ fn lock<'a>(state: &'a State<'a, AppState>) -> MutexGuard<'a, TunnelManager> {
     state.0.lock().expect("隧道状态锁已损坏")
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn tailscale_status() -> tailscale::TailscaleReport {
     tailscale::inspect()
 }
@@ -92,8 +92,34 @@ fn set_config_path(app: AppHandle, state: State<AppState>, path: String) -> Resu
 }
 
 #[tauri::command]
-fn tunnel_log(state: State<AppState>, id: String) -> String {
+fn tunnel_log(state: State<AppState>, id: String) -> model::LogPage {
     lock(&state).log_of(&id)
+}
+
+#[tauri::command]
+fn export_tunnel(state: State<AppState>, id: String, path: String) -> Result<(), String> {
+    let text = lock(&state).export_text(&id)?;
+    write_private_atomic(std::path::Path::new(&path), &text)
+}
+
+#[tauri::command]
+fn open_local(port: u16) -> Result<(), String> {
+    if port == 0 {
+        return Err("端口无效。".into());
+    }
+    let url = format!("http://localhost:{port}");
+    let status = std::process::Command::new("open")
+        .arg(&url)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map_err(|error| format!("无法打开浏览器：{error}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err("无法打开浏览器。".into())
+    }
 }
 
 #[tauri::command]
@@ -117,9 +143,9 @@ fn start_tunnel(app: AppHandle, state: State<AppState>, id: String) -> Result<Sn
             let pid = child.id();
             let stdout = child.stdout.take();
             let stderr = child.stderr.take();
-            {
+            let update = {
                 let mut manager = lock(&state);
-                manager.push_log(&plan.id, &plan.command);
+                let update = manager.push_log(&plan.id, &plan.command);
                 manager.attach(
                     &plan.id,
                     Running {
@@ -128,8 +154,11 @@ fn start_tunnel(app: AppHandle, state: State<AppState>, id: String) -> Result<Sn
                         pw_file: plan.pw_file.clone(),
                     },
                 );
+                update
+            };
+            if let Some(update) = update {
+                emit_log(&app, &plan.id, update.seq, &plan.command);
             }
-            let _ = app.emit("tunnel-log", LogLine::new(&plan.id, &plan.command));
             if let Some(stdout) = stdout {
                 pump_output(app.clone(), plan.id.clone(), stdout);
             }
@@ -165,12 +194,14 @@ fn start_tunnel(app: AppHandle, state: State<AppState>, id: String) -> Result<Sn
             } else {
                 format!("无法启动 ssh：{error}")
             };
-            let snapshot = {
+            let (seq, snapshot) = {
                 let mut manager = lock(&state);
-                manager.fail_start(&id, &plan.pw_file, message.clone());
-                manager.snapshot()
+                let seq = manager.fail_start(&id, &plan.pw_file, message.clone());
+                (seq, manager.snapshot())
             };
-            let _ = app.emit("tunnel-log", LogLine::new(&id, &message));
+            if let Some(seq) = seq {
+                emit_log(&app, &id, seq, &message);
+            }
             let _ = app.emit("tunnels-changed", &snapshot);
             Err(message)
         }
@@ -189,16 +220,19 @@ fn stop_tunnel(state: State<AppState>, id: String) -> Result<Snapshot, String> {
 #[derive(Clone, serde::Serialize)]
 struct LogLine {
     id: String,
+    seq: u64,
     line: String,
 }
 
-impl LogLine {
-    fn new(id: &str, line: &str) -> Self {
-        Self {
+fn emit_log(app: &AppHandle, id: &str, seq: u64, line: &str) {
+    let _ = app.emit(
+        "tunnel-log",
+        LogLine {
             id: id.to_string(),
+            seq,
             line: line.to_string(),
-        }
-    }
+        },
+    );
 }
 
 fn pump_output<R>(app: AppHandle, id: String, stream: R)
@@ -221,15 +255,27 @@ where
             if line.is_empty() {
                 continue;
             }
-            {
+            let update = {
                 let state = app.state::<AppState>();
                 let mut manager = state.0.lock().expect("隧道状态锁已损坏");
                 if manager.is_shutting_down() {
                     return;
                 }
-                manager.push_log(&id, &line);
+                manager.push_log(&id, &line)
+            };
+            let Some(update) = update else {
+                continue;
+            };
+            emit_log(&app, &id, update.seq, &line);
+            if update.established {
+                let snapshot = app
+                    .state::<AppState>()
+                    .0
+                    .lock()
+                    .expect("隧道状态锁已损坏")
+                    .snapshot();
+                let _ = app.emit("tunnels-changed", &snapshot);
             }
-            let _ = app.emit("tunnel-log", LogLine::new(&id, &line));
         }
     });
 }
@@ -260,6 +306,8 @@ pub fn run() {
             select_tunnel,
             set_config_path,
             tunnel_log,
+            export_tunnel,
+            open_local,
             start_tunnel,
             stop_tunnel
         ])

@@ -4,7 +4,7 @@ export type Forward = {
   remotePort: number;
 };
 
-export type TunnelStatus = "stopped" | "running" | "failed";
+export type TunnelStatus = "stopped" | "connecting" | "running" | "failed";
 
 export type Tunnel = {
   id: string;
@@ -15,6 +15,7 @@ export type Tunnel = {
   forwards: Forward[];
   status: TunnelStatus;
   message: string | null;
+  connectedAt: number | null;
 };
 
 export type Snapshot = {
@@ -25,15 +26,20 @@ export type Snapshot = {
 
 export type LogLine = {
   id: string;
+  seq: number;
   line: string;
 };
 
+export type LogPage = {
+  floor: number;
+  lines: { seq: number; line: string }[];
+};
+
+export const MAX_LOG_CHARS = 80_000;
+
 export function statusLabel(status: TunnelStatus): string {
+  if (status === "connecting") return "正在连接";
   if (status === "running") return "运行中";
   if (status === "failed") return "连接失败";
   return "已停止";
-}
-
-export function forwardLabel(forward: Forward): string {
-  return `${forward.localPort} → ${forward.remoteHost}:${forward.remotePort}`;
 }

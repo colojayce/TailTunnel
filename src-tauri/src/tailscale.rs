@@ -1,11 +1,16 @@
 use serde::Serialize;
+use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
+
+const STATUS_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TailscaleMachine {
     pub host_name: String,
+    pub dns_name: String,
     pub ipv4: String,
     pub online: bool,
     pub here: bool,
@@ -30,10 +35,12 @@ pub fn inspect() -> TailscaleReport {
     let Some(bin) = find_binary() else {
         return missing();
     };
-    let output = Command::new(bin).arg("status").arg("--json").output();
-    let output = match output {
+    let mut command = Command::new(bin);
+    command.arg("status").arg("--json");
+    let output = match capture(command, STATUS_TIMEOUT) {
         Ok(output) => output,
-        Err(error) => {
+        Err(CaptureError::TimedOut { pid: _ }) => return failed("Tailscale 响应超时".into()),
+        Err(CaptureError::Io(error)) => {
             return failed(format!("读不到 Tailscale 状态：{error}"));
         }
     };
@@ -47,6 +54,59 @@ pub fn inspect() -> TailscaleReport {
         });
     }
     parse_status(&String::from_utf8_lossy(&output.stdout)).unwrap_or_else(failed)
+}
+
+enum CaptureError {
+    TimedOut { pid: u32 },
+    Io(std::io::Error),
+}
+
+fn capture(mut command: Command, limit: Duration) -> Result<std::process::Output, CaptureError> {
+    let mut child = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(CaptureError::Io)?;
+    let stdout_pipe = child.stdout.take();
+    let stderr_pipe = child.stderr.take();
+    let stdout_task = std::thread::spawn(move || read_pipe(stdout_pipe));
+    let stderr_task = std::thread::spawn(move || read_pipe(stderr_pipe));
+    let started = Instant::now();
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Ok(status),
+            Ok(None) if started.elapsed() >= limit => {
+                let pid = child.id();
+                let _ = child.kill();
+                let _ = child.wait();
+                break Err(CaptureError::TimedOut { pid });
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(20)),
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = stdout_task.join();
+                let _ = stderr_task.join();
+                return Err(CaptureError::Io(error));
+            }
+        }
+    };
+    let stdout = stdout_task.join().unwrap_or_default();
+    let stderr = stderr_task.join().unwrap_or_default();
+    status.map(|status| std::process::Output {
+        status,
+        stdout,
+        stderr,
+    })
+}
+
+fn read_pipe(pipe: Option<impl Read>) -> Vec<u8> {
+    let mut buf = Vec::new();
+    if let Some(mut pipe) = pipe {
+        let _ = pipe.read_to_end(&mut buf);
+    }
+    buf
 }
 
 fn missing() -> TailscaleReport {
@@ -154,6 +214,7 @@ fn machine_from(value: &serde_json::Value, here: bool) -> TailscaleMachine {
     };
     TailscaleMachine {
         host_name,
+        dns_name: dns_name.to_string(),
         ipv4: first_ipv4(value.get("TailscaleIPs")).unwrap_or_default(),
         online: value.get("Online").and_then(|item| item.as_bool()) == Some(true),
         here,
@@ -213,10 +274,32 @@ mod tests {
         assert_eq!(report.state_label, "已连接");
         assert_eq!(report.machines.len(), 3);
         assert!(report.machines[0].here);
+        assert_eq!(report.machines[0].dns_name, "mbp.ts.net");
         assert_eq!(report.machines[1].host_name, "nas");
         assert_eq!(report.machines[1].ipv4, "100.64.1.2");
         assert!(report.machines[1].online);
         assert_eq!(report.machines[2].host_name, "desk");
         assert!(!report.machines[2].online);
+    }
+
+    #[test]
+    fn slow_command_is_reaped() {
+        let started = Instant::now();
+        let mut command = Command::new("sleep");
+        command.arg("30");
+        let error = capture(command, Duration::from_millis(200)).unwrap_err();
+        let CaptureError::TimedOut { pid } = error else {
+            panic!("应该超时");
+        };
+        assert!(started.elapsed() < Duration::from_secs(2));
+        let listed = Command::new("ps")
+            .args(["-p", &pid.to_string(), "-o", "stat="])
+            .output()
+            .unwrap();
+        assert!(
+            !listed.status.success(),
+            "进程还在：{}",
+            String::from_utf8_lossy(&listed.stdout)
+        );
     }
 }

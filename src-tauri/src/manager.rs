@@ -1,6 +1,7 @@
 use crate::model::{
     config_file, display_command, load_store_at, save_store_at, set_private, ssh_args,
-    validate_draft, Snapshot, Tunnel, TunnelDraft, TunnelStatus, TunnelView, MAX_LOG_CHARS,
+    tunnel_export, validate_draft, LogEntry, LogPage, Snapshot, Tunnel, TunnelDraft, TunnelStatus,
+    TunnelView, MAX_LOG_CHARS,
 };
 use std::collections::HashMap;
 use std::fs;
@@ -18,8 +19,16 @@ struct Live {
     status: TunnelStatus,
     message: Option<String>,
     last_line: Option<String>,
-    log: String,
+    lines: Vec<LogEntry>,
+    next_seq: u64,
+    floor: u64,
+    connected_at: Option<u64>,
     running: Option<Running>,
+}
+
+pub struct LogUpdate {
+    pub seq: u64,
+    pub established: bool,
 }
 
 pub struct StartPlan {
@@ -77,11 +86,26 @@ impl TunnelManager {
         }
     }
 
-    pub fn log_of(&self, id: &str) -> String {
+    pub fn log_of(&self, id: &str) -> LogPage {
         self.live
             .get(id)
-            .map(|live| live.log.clone())
-            .unwrap_or_default()
+            .map(|live| LogPage {
+                floor: live.floor,
+                lines: live.lines.clone(),
+            })
+            .unwrap_or(LogPage {
+                floor: 0,
+                lines: Vec::new(),
+            })
+    }
+
+    pub fn export_text(&self, id: &str) -> Result<String, String> {
+        let tunnel = self
+            .tunnels
+            .iter()
+            .find(|tunnel| tunnel.id == id)
+            .ok_or("这条隧道已经不在列表里。")?;
+        tunnel_export(tunnel)
     }
 
     pub fn select(&mut self, id: Option<String>) -> Result<(), String> {
@@ -168,7 +192,15 @@ impl TunnelManager {
 
     pub fn prepare_start(&mut self, id: &str) -> Result<StartPlan, String> {
         if self.running_pid(id).is_some() {
-            return Err("这条隧道已经在运行。".into());
+            let connecting = self
+                .live
+                .get(id)
+                .is_some_and(|live| live.status == TunnelStatus::Connecting);
+            return Err(if connecting {
+                "这条隧道正在连接。".into()
+            } else {
+                "这条隧道已经在运行。".into()
+            });
         }
         let tunnel = self
             .tunnels
@@ -185,9 +217,11 @@ impl TunnelManager {
         let command = display_command(&args);
         let stop_requested = Arc::new(AtomicBool::new(false));
         if let Some(live) = self.live.get_mut(id) {
-            live.log = String::new();
+            live.lines.clear();
+            live.floor = live.next_seq;
             live.message = None;
             live.last_line = None;
+            live.connected_at = None;
         }
         self.selected = Some(id.to_string());
         Ok(StartPlan {
@@ -202,30 +236,38 @@ impl TunnelManager {
 
     pub fn attach(&mut self, id: &str, running: Running) {
         let live = self.live.entry(id.to_string()).or_insert_with(Live::stopped);
-        live.status = TunnelStatus::Running;
+        live.status = TunnelStatus::Connecting;
         live.message = None;
+        live.connected_at = None;
         live.running = Some(running);
     }
 
-    pub fn fail_start(&mut self, id: &str, pw_file: &Path, message: String) {
+    pub fn fail_start(&mut self, id: &str, pw_file: &Path, message: String) -> Option<u64> {
         let _ = fs::remove_file(pw_file);
-        if let Some(live) = self.live.get_mut(id) {
-            live.status = TunnelStatus::Failed;
-            live.message = Some(message.clone());
-            live.running = None;
-            push_text(&mut live.log, &message);
-        }
+        let live = self.live.get_mut(id)?;
+        live.status = TunnelStatus::Failed;
+        live.message = Some(message.clone());
+        live.connected_at = None;
+        live.running = None;
+        Some(append_line(live, &message))
     }
 
-    pub fn push_log(&mut self, id: &str, line: &str) {
-        if let Some(live) = self.live.get_mut(id) {
-            push_text(&mut live.log, line);
-            let trimmed = trim_message(line);
-            live.last_line = Some(trimmed.clone());
-            if live.status == TunnelStatus::Failed {
-                live.message = Some(trimmed);
-            }
+    pub fn push_log(&mut self, id: &str, line: &str) -> Option<LogUpdate> {
+        let live = self.live.get_mut(id)?;
+        let seq = append_line(live, line);
+        let trimmed = trim_message(line);
+        live.last_line = Some(trimmed.clone());
+        if live.status == TunnelStatus::Failed {
+            live.message = Some(trimmed);
         }
+        let mut established = false;
+        if live.status == TunnelStatus::Connecting && session_ready(line) {
+            live.status = TunnelStatus::Running;
+            live.connected_at = Some(now_ms());
+            live.message = None;
+            established = true;
+        }
+        Some(LogUpdate { seq, established })
     }
 
     pub fn mark_exit(&mut self, id: &str, intentional: bool, code: Option<i32>) -> bool {
@@ -234,11 +276,12 @@ impl TunnelManager {
             return false;
         };
         live.running = None;
+        live.connected_at = None;
         if intentional {
             live.status = TunnelStatus::Stopped;
             live.message = None;
             live.last_line = None;
-            push_text(&mut live.log, "已停止");
+            append_line(live, "已停止");
         } else {
             let fallback = match code {
                 Some(code) => format!("进程已退出，退出码 {code}"),
@@ -251,7 +294,7 @@ impl TunnelManager {
             live.status = TunnelStatus::Failed;
             live.message = Some(message.clone());
             if live.last_line.as_deref() != Some(message.as_str()) {
-                push_text(&mut live.log, &message);
+                append_line(live, &message);
             }
         }
         true
@@ -286,6 +329,7 @@ impl TunnelManager {
             forwards: tunnel.forwards.clone(),
             status: live.map(|item| item.status).unwrap_or(TunnelStatus::Stopped),
             message: live.and_then(|item| item.message.clone()),
+            connected_at: live.and_then(|item| item.connected_at),
         }
     }
 
@@ -309,25 +353,44 @@ impl Live {
             status: TunnelStatus::Stopped,
             message: None,
             last_line: None,
-            log: String::new(),
+            lines: Vec::new(),
+            next_seq: 0,
+            floor: 0,
+            connected_at: None,
             running: None,
         }
     }
 }
 
-fn push_text(log: &mut String, line: &str) {
-    if !log.is_empty() {
-        log.push('\n');
+pub fn session_ready(line: &str) -> bool {
+    line.contains("Local forwarding listening") || line.contains("Entering interactive session")
+}
+
+fn append_line(live: &mut Live, line: &str) -> u64 {
+    let seq = live.next_seq;
+    live.next_seq = live.next_seq.saturating_add(1);
+    live.lines.push(LogEntry {
+        seq,
+        line: line.to_string(),
+    });
+    while live.lines.len() > 1 && log_bytes(&live.lines) > MAX_LOG_CHARS {
+        live.lines.remove(0);
     }
-    log.push_str(line);
-    if log.len() > MAX_LOG_CHARS {
-        let extra = log.len() - MAX_LOG_CHARS;
-        let mut cut = extra;
-        while !log.is_char_boundary(cut) {
-            cut += 1;
-        }
-        log.replace_range(..cut, "");
+    seq
+}
+
+fn log_bytes(lines: &[LogEntry]) -> usize {
+    if lines.is_empty() {
+        return 0;
     }
+    lines.iter().map(|line| line.line.len()).sum::<usize>() + lines.len() - 1
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| u64::try_from(duration.as_millis()).unwrap_or(u64::MAX))
+        .unwrap_or(0)
 }
 
 fn trim_message(line: &str) -> String {
@@ -414,6 +477,150 @@ fn clear_password_files(dir: &Path) {
         if name.starts_with("pw-") {
             let _ = fs::remove_file(entry.path());
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{ForwardDraft, TunnelDraft, TunnelStatus, MAX_LOG_CHARS};
+    use std::fs;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    fn draft() -> TunnelDraft {
+        TunnelDraft {
+            id: None,
+            host: "100.64.1.2".into(),
+            port: 22,
+            user: "root".into(),
+            password: "s3cret".into(),
+            forwards: vec![ForwardDraft {
+                local_port: 8080,
+                remote_host: "127.0.0.1".into(),
+                remote_port: 80,
+            }],
+        }
+    }
+
+    fn loaded() -> (PathBuf, TunnelManager) {
+        static N: AtomicU64 = AtomicU64::new(0);
+        let n = N.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("tailtunnel-mgr-{}-{n}", std::process::id()));
+        let manager = TunnelManager::load(dir.clone()).expect("临时目录");
+        (dir, manager)
+    }
+
+    #[test]
+    fn stays_connecting_until_the_forward_is_listening() {
+        let (dir, mut manager) = loaded();
+        let id = manager.upsert(draft()).unwrap();
+        let plan = manager.prepare_start(&id).unwrap();
+        manager.attach(
+            &id,
+            Running {
+                pid: 424_242,
+                stop_requested: plan.stop_requested,
+                pw_file: plan.pw_file,
+            },
+        );
+        let view = manager.snapshot().tunnels.into_iter().next().unwrap();
+        assert_eq!(view.status, TunnelStatus::Connecting);
+        assert!(view.connected_at.is_none());
+
+        let early = manager
+            .push_log(&id, "debug1: Connecting to 100.64.1.2 [100.64.1.2] port 22.")
+            .unwrap();
+        assert!(!early.established);
+        assert_eq!(
+            manager.snapshot().tunnels[0].status,
+            TunnelStatus::Connecting
+        );
+
+        let ready = manager
+            .push_log(&id, "debug1: Local forwarding listening on 127.0.0.1 port 8080.")
+            .unwrap();
+        assert!(ready.established);
+        let view = manager.snapshot().tunnels.into_iter().next().unwrap();
+        assert_eq!(view.status, TunnelStatus::Running);
+        let started = view.connected_at.expect("已记录连接时间");
+
+        let again = manager
+            .push_log(&id, "debug1: Local forwarding listening on 127.0.0.1 port 8080.")
+            .unwrap();
+        assert!(!again.established);
+        assert_eq!(manager.snapshot().tunnels[0].connected_at, Some(started));
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn interactive_session_also_counts_as_connected() {
+        let (dir, mut manager) = loaded();
+        let id = manager.upsert(draft()).unwrap();
+        let plan = manager.prepare_start(&id).unwrap();
+        manager.attach(
+            &id,
+            Running {
+                pid: 424_242,
+                stop_requested: plan.stop_requested,
+                pw_file: plan.pw_file,
+            },
+        );
+        let ready = manager
+            .push_log(&id, "debug1: Entering interactive session.")
+            .unwrap();
+        assert!(ready.established);
+        assert_eq!(
+            manager.snapshot().tunnels[0].status,
+            TunnelStatus::Running
+        );
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn repeated_lines_keep_their_own_sequence() {
+        let (dir, mut manager) = loaded();
+        let id = manager.upsert(draft()).unwrap();
+        manager.prepare_start(&id).unwrap();
+        let first = manager.push_log(&id, "debug1: keepalive").unwrap();
+        let second = manager.push_log(&id, "debug1: keepalive").unwrap();
+        assert_ne!(first.seq, second.seq);
+        let page = manager.log_of(&id);
+        assert_eq!(page.lines.len(), 2);
+        assert_eq!(page.lines[0].line, page.lines[1].line);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn restart_drops_old_lines_and_raises_the_floor() {
+        let (dir, mut manager) = loaded();
+        let id = manager.upsert(draft()).unwrap();
+        manager.prepare_start(&id).unwrap();
+        manager.push_log(&id, "a").unwrap();
+        manager.push_log(&id, "b").unwrap();
+        manager.prepare_start(&id).unwrap();
+        let page = manager.log_of(&id);
+        assert!(page.lines.is_empty());
+        assert_eq!(page.floor, 2);
+        let next = manager.push_log(&id, "c").unwrap();
+        assert_eq!(next.seq, 2);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn long_log_drops_oldest_whole_lines() {
+        let (dir, mut manager) = loaded();
+        let id = manager.upsert(draft()).unwrap();
+        let line = "x".repeat(30_000);
+        manager.push_log(&id, &line).unwrap();
+        manager.push_log(&id, &line).unwrap();
+        manager.push_log(&id, &line).unwrap();
+        let page = manager.log_of(&id);
+        assert_eq!(page.lines.len(), 2);
+        assert_eq!(page.lines[0].seq, 1);
+        assert_eq!(page.lines[1].seq, 2);
+        assert!(super::log_bytes(&page.lines) <= MAX_LOG_CHARS);
+        let _ = fs::remove_dir_all(dir);
     }
 }
 
