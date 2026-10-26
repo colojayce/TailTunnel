@@ -110,7 +110,7 @@ body:not([data-view="tunnels"]) #create { visibility: hidden; }
   width: 100%;
   min-width: 0;
   gap: 0.75rem 1.25rem;
-  align-items: baseline;
+  align-items: start;
   padding: 0.35rem 0.4rem;
   font-size: var(--step-body);
   line-height: 1.45;
@@ -118,6 +118,20 @@ body:not([data-view="tunnels"]) #create { visibility: hidden; }
 
 .machine.live { background: var(--surface); }
 .machine .status.running { color: var(--live); }
+
+.machine-state {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+}
+
+.machine-state .path {
+  font-size: var(--step-small);
+  line-height: 1.2;
+}
+
+.machine-state .path.direct { color: var(--live); }
+.machine-state .path.derp { color: var(--accent); }
 
 .machine-name,
 .machine-address {

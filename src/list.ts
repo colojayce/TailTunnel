@@ -497,6 +497,7 @@ type TailscaleMachine = {
   ipv4: string;
   online: boolean;
   here: boolean;
+  path: string;
 };
 
 type TailscaleReport = {
@@ -595,8 +596,17 @@ function paintTailscale(report: TailscaleReport) {
       });
       address.append(ip, copy);
       const state = document.createElement("span");
-      state.className = machine.online ? "status running" : "status stopped";
-      state.textContent = machine.online ? "Online" : "Offline";
+      state.className = "machine-state";
+      const presence = document.createElement("span");
+      presence.className = machine.online ? "status running" : "status stopped";
+      presence.textContent = machine.online ? "Online" : "Offline";
+      state.append(presence);
+      if (machine.path) {
+        const path = document.createElement("span");
+        path.className = machine.path.startsWith("DERP") ? "path derp" : "path direct";
+        path.textContent = machine.path;
+        state.append(path);
+      }
       row.append(name, address, state);
       body.append(row);
     }
@@ -628,7 +638,9 @@ function fillHostPicks() {
     const button = document.createElement("button");
     button.type = "button";
     button.className = "host-pick";
-    button.textContent = `${machine.hostName}   ${machine.ipv4}   ${machine.online ? "在线" : "离线"}`;
+    button.textContent = machine.path
+      ? `${machine.hostName}   ${machine.ipv4}   ${machine.online ? "在线" : "离线"}   ${machine.path}`
+      : `${machine.hostName}   ${machine.ipv4}   ${machine.online ? "在线" : "离线"}`;
     button.addEventListener("click", () => {
       hostInput.value = machine.ipv4;
       box.hidden = true;

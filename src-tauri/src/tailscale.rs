@@ -14,6 +14,7 @@ pub struct TailscaleMachine {
     pub ipv4: String,
     pub online: bool,
     pub here: bool,
+    pub path: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -37,6 +38,8 @@ pub fn inspect() -> TailscaleReport {
     };
     let mut command = Command::new(bin);
     command.arg("status").arg("--json");
+    // Mac 应用包里的这个可执行文件，在没有终端环境时会去启动图形界面，标准输出就不是 JSON。
+    command.env("TAILSCALE_BE_CLI", "1");
     let output = match capture(command, STATUS_TIMEOUT) {
         Ok(output) => output,
         Err(CaptureError::TimedOut { pid: _ }) => return failed("Tailscale 响应超时".into()),
@@ -53,7 +56,19 @@ pub fn inspect() -> TailscaleReport {
             format!("Tailscale：{err}")
         });
     }
-    parse_status(&String::from_utf8_lossy(&output.stdout)).unwrap_or_else(failed)
+    report_from_stdout(&String::from_utf8_lossy(&output.stdout))
+}
+
+fn report_from_stdout(stdout: &str) -> TailscaleReport {
+    let trimmed = stdout.trim();
+    if !trimmed.starts_with('{') {
+        return failed(if trimmed.is_empty() {
+            "Tailscale 没有返回状态。".into()
+        } else {
+            format!("Tailscale：{trimmed}")
+        });
+    }
+    parse_status(trimmed).unwrap_or_else(failed)
 }
 
 enum CaptureError {
@@ -212,13 +227,37 @@ fn machine_from(value: &serde_json::Value, here: bool) -> TailscaleMachine {
     } else {
         "未命名".into()
     };
+    let online = value.get("Online").and_then(|item| item.as_bool()) == Some(true);
     TailscaleMachine {
         host_name,
         dns_name: dns_name.to_string(),
         ipv4: first_ipv4(value.get("TailscaleIPs")).unwrap_or_default(),
-        online: value.get("Online").and_then(|item| item.as_bool()) == Some(true),
+        online,
         here,
+        path: if online { path_label(value) } else { String::new() },
     }
+}
+
+fn path_label(value: &serde_json::Value) -> String {
+    let cur_addr = text_field(value, "CurAddr");
+    if !cur_addr.is_empty() {
+        return "直连".into();
+    }
+    let relay = text_field(value, "Relay");
+    if relay.is_empty() {
+        String::new()
+    } else {
+        format!("DERP · {relay}")
+    }
+}
+
+fn text_field(value: &serde_json::Value, key: &str) -> String {
+    value
+        .get(key)
+        .and_then(|item| item.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string()
 }
 
 fn state_label(state: &str) -> &'static str {
@@ -280,6 +319,37 @@ mod tests {
         assert!(report.machines[1].online);
         assert_eq!(report.machines[2].host_name, "desk");
         assert!(!report.machines[2].online);
+    }
+
+    #[test]
+    fn labels_direct_and_derp_paths() {
+        let report = parse_status(
+            r#"{"BackendState":"Running","Self":{"HostName":"mbp","Online":true,"TailscaleIPs":["100.64.1.1"]},"Peer":{"direct":{"HostName":"nas","Online":true,"CurAddr":"203.0.113.8:41641","Relay":"hkg","TailscaleIPs":["100.64.1.2"]},"relay":{"HostName":"office","Online":true,"CurAddr":"","Relay":"hkg","TailscaleIPs":["100.64.1.3"]},"unknown":{"HostName":"idle","Online":true,"TailscaleIPs":["100.64.1.4"]},"gone":{"HostName":"old","Online":false,"Relay":"sfo","TailscaleIPs":["100.64.1.5"]}}}"#,
+        )
+        .unwrap();
+        let path = |name: &str| {
+            report
+                .machines
+                .iter()
+                .find(|machine| machine.host_name == name)
+                .unwrap()
+                .path
+                .clone()
+        };
+        assert_eq!(path("nas"), "直连");
+        assert_eq!(path("office"), "DERP · hkg");
+        assert_eq!(path("idle"), "");
+        assert_eq!(path("old"), "");
+        assert_eq!(path("mbp"), "");
+    }
+
+    #[test]
+    fn plain_text_status_is_shown_as_message() {
+        let report = report_from_stdout(
+            "The Tailscale GUI failed to start: The operation couldn’t be completed.\n",
+        );
+        assert_eq!(report.state, "error");
+        assert!(report.message.contains("GUI failed"));
     }
 
     #[test]
