@@ -8,6 +8,7 @@ export type TunnelStatus = "stopped" | "connecting" | "running" | "failed";
 
 export type Tunnel = {
   id: string;
+  note: string;
   host: string;
   port: number;
   user: string;

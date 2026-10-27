@@ -1,0 +1,37 @@
+/* Remix Icon 字体，只留 woff2 和用到的图标。新增图标时在这里补一行，编码见 node_modules/remixicon/fonts/remixicon.css。 */
+@font-face {
+  font-family: "remixicon";
+  src: url("../node_modules/remixicon/fonts/remixicon.woff2") format("woff2");
+  font-display: block;
+}
+
+[class^="ri-"], [class*=" ri-"] {
+  font-family: "remixicon" !important;
+  font-style: normal;
+  -webkit-font-smoothing: antialiased;
+}
+
+.ri-add-line::before { content: "\ea13"; }
+.ri-arrow-right-line::before { content: "\ea6c"; }
+.ri-check-line::before { content: "\eb7b"; }
+.ri-close-line::before { content: "\eb99"; }
+.ri-delete-bin-line::before { content: "\ec2a"; }
+.ri-error-warning-line::before { content: "\eca1"; }
+.ri-external-link-line::before { content: "\ecaf"; }
+.ri-eye-line::before { content: "\ecb5"; }
+.ri-eye-off-line::before { content: "\ecb7"; }
+.ri-file-copy-line::before { content: "\ecd5"; }
+.ri-file-settings-line::before { content: "\ed07"; }
+.ri-folder-open-line::before { content: "\ed70"; }
+.ri-global-line::before { content: "\edcf"; }
+.ri-loader-4-line::before { content: "\eec6"; }
+.ri-macbook-line::before { content: "\eee8"; }
+.ri-pencil-line::before { content: "\efe0"; }
+.ri-play-line::before { content: "\f00b"; }
+.ri-refresh-line::before { content: "\f064"; }
+.ri-route-line::before { content: "\f09b"; }
+.ri-server-line::before { content: "\f0e0"; }
+.ri-settings-3-line::before { content: "\f0e6"; }
+.ri-stop-line::before { content: "\f1a1"; }
+.ri-terminal-box-line::before { content: "\f1f6"; }
+.ri-upload-2-line::before { content: "\f24a"; }

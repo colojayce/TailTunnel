@@ -1,9 +1,13 @@
-import "@fontsource/red-hat-display/900.css";
-import "@fontsource/red-hat-text/400.css";
-import "@fontsource/red-hat-text/500.css";
+import "@fontsource/ibm-plex-sans/400.css";
+import "@fontsource/ibm-plex-sans/500.css";
+import "@fontsource/ibm-plex-sans/600.css";
+import "@fontsource/ibm-plex-mono/400.css";
+import "@fontsource/ibm-plex-mono/500.css";
+import "./icons.css";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open, save } from "@tauri-apps/plugin-dialog";
+import { emptyArt, type EmptyScene } from "./empty";
 import { MAX_LOG_CHARS, statusLabel, type Forward, type LogLine, type LogPage, type Snapshot, type Tunnel, type TunnelStatus } from "./types";
 
 const summary = document.querySelector<HTMLElement>("#summary")!;
@@ -21,6 +25,7 @@ const editorNote = document.querySelector<HTMLElement>("#editor-note")!;
 const formError = document.querySelector<HTMLElement>("#form-error")!;
 const forwardsEl = document.querySelector<HTMLElement>("#forwards")!;
 const deleteButton = document.querySelector<HTMLButtonElement>("#delete-tunnel")!;
+const noteInput = document.querySelector<HTMLInputElement>("#note")!;
 const hostInput = document.querySelector<HTMLInputElement>("#host")!;
 const portInput = document.querySelector<HTMLInputElement>("#ssh-port")!;
 const userInput = document.querySelector<HTMLInputElement>("#user")!;
@@ -69,31 +74,40 @@ function render() {
   syncDock();
 
   list.classList.toggle("arrive", !seenArrival);
+  seenArrival = true;
   list.replaceChildren();
   if (count === 0) {
-    const empty = document.createElement("p");
-    empty.className = "empty";
-    empty.textContent = "还没有隧道";
-    list.append(empty);
-    seenArrival = true;
+    const create = labeledButton("add-line", "新建隧道", "accent");
+    create.addEventListener("click", () => openEditor());
+    list.append(emptyState("no-tunnels", "还没有隧道", "新建一条，填上主机、用户和本地转发，保存后点启动。", create));
     return;
   }
 
-  const bar = document.createElement("div");
-  bar.className = "select-bar";
-  list.append(bar);
-
   for (const tunnel of snapshot.tunnels) {
     const row = document.createElement("div");
-    row.className = tunnel.id === snapshot.selectedId ? "row selected" : "row";
+    row.className = tunnel.id === snapshot.selectedId ? `row ${tunnel.status} selected` : `row ${tunnel.status}`;
+    row.addEventListener("click", (event) => {
+      if (event.target instanceof Element && event.target.closest("button:not(.row-main)")) return;
+      void select(tunnel.id);
+    });
+
+    const tile = document.createElement("span");
+    tile.className = "tile";
+    tile.append(icon("route-line"));
 
     const main = document.createElement("button");
     main.type = "button";
     main.className = "row-main";
     const identity = document.createElement("span");
     identity.className = "identity";
-    identity.textContent = `${tunnel.user}@${tunnel.host}`;
+    identity.textContent = tunnel.note || `${tunnel.user}@${tunnel.host}`;
     main.append(identity);
+    if (tunnel.note) {
+      const sub = document.createElement("span");
+      sub.className = "sub";
+      sub.textContent = `${tunnel.user}@${tunnel.host}`;
+      main.append(sub);
+    }
     const peer = peerOf(tunnel.host);
     if (peer) {
       const badge = document.createElement("span");
@@ -101,61 +115,75 @@ function render() {
       badge.textContent = peer.online ? "在线" : "离线";
       main.append(badge);
     }
-    main.addEventListener("click", () => {
-      void select(tunnel.id);
-    });
 
     const detail = document.createElement("div");
     detail.className = "detail";
     fillForwards(detail, tunnel.forwards);
-    detail.addEventListener("click", (event) => {
-      if (event.target instanceof HTMLButtonElement) return;
-      void select(tunnel.id);
-    });
 
     const status = document.createElement("span");
     paintStatus(status, tunnel.status, tunnel.connectedAt);
 
-    const action = document.createElement("button");
-    action.type = "button";
-    action.className = busy(tunnel.status) ? "stop" : "go";
-    action.textContent = busy(tunnel.status) ? "停止" : "启动";
+    const actions = document.createElement("div");
+    actions.className = "row-actions";
+    const action = busy(tunnel.status)
+      ? labeledButton("stop-line", "停止", "stop")
+      : labeledButton("play-line", "启动", "go");
     action.addEventListener("click", () => {
       void toggle(tunnel);
     });
 
     const edit = document.createElement("button");
     edit.type = "button";
-    edit.textContent = "编辑";
+    edit.className = "icon";
+    edit.title = "编辑";
+    edit.setAttribute("aria-label", "编辑");
+    edit.append(icon("pencil-line"));
     edit.addEventListener("click", () => openEditor(tunnel));
+    actions.append(action, edit);
 
-    row.append(main, detail, status, action, edit);
+    row.append(tile, main, detail, status, actions);
     if (tunnel.message) {
       const message = document.createElement("span");
       message.className = "message";
-      message.textContent = tunnel.message;
+      message.append(icon("error-warning-line"), document.createTextNode(tunnel.message));
       row.append(message);
     }
     list.append(row);
   }
+}
 
-  const placeBar = () => {
-    const selected = list.querySelector(".row.selected");
-    if (!(selected instanceof HTMLElement)) {
-      bar.hidden = true;
-      return;
-    }
-    bar.hidden = false;
-    bar.style.height = `${selected.offsetHeight}px`;
-    bar.style.transform = `translateY(${selected.offsetTop}px)`;
-  };
-  placeBar();
-  if (!seenArrival) {
-    seenArrival = true;
-    requestAnimationFrame(() => bar.classList.add("move"));
-  } else {
-    bar.classList.add("move");
-  }
+function icon(name: string): HTMLElement {
+  const el = document.createElement("i");
+  el.className = `ri-${name}`;
+  el.setAttribute("aria-hidden", "true");
+  return el;
+}
+
+function labeledButton(iconName: string, label: string, className = ""): HTMLButtonElement {
+  const button = document.createElement("button");
+  button.type = "button";
+  if (className) button.className = className;
+  const text = document.createElement("span");
+  text.textContent = label;
+  button.append(icon(iconName), text);
+  return button;
+}
+
+function emptyState(scene: EmptyScene, title: string, text: string, action?: HTMLElement): HTMLElement {
+  const box = document.createElement("div");
+  box.className = "empty";
+  const art = document.createElement("div");
+  art.className = "empty-art";
+  art.innerHTML = emptyArt(scene);
+  const heading = document.createElement("p");
+  heading.className = "empty-title";
+  heading.textContent = title;
+  const line = document.createElement("p");
+  line.className = "empty-text";
+  line.textContent = text;
+  box.append(art, heading, line);
+  if (action) box.append(action);
+  return box;
 }
 
 async function refresh() {
@@ -202,17 +230,19 @@ function addForwardRow(forward: Forward = blankForward()) {
   const local = field("本地端口", String(forward.localPort || ""), "number");
   const remoteHost = field("远端地址", forward.remoteHost, "text");
   const remote = field("远端端口", String(forward.remotePort || ""), "number");
+  const arrow = icon("arrow-right-line");
+  arrow.className += " forward-arrow";
   const remove = document.createElement("button");
   remove.type = "button";
   remove.className = "icon";
-  remove.textContent = "×";
+  remove.append(icon("close-line"));
   remove.setAttribute("aria-label", "去掉这一行");
   remove.addEventListener("click", () => {
     if (forwardsEl.children.length === 1) return;
     row.remove();
     syncRemoveButtons();
   });
-  row.append(local, remoteHost, remote, remove);
+  row.append(local, arrow, remoteHost, remote, remove);
   forwardsEl.append(row);
   syncRemoveButtons();
 }
@@ -260,12 +290,13 @@ function openEditor(tunnel?: Tunnel) {
   editorNote.textContent = tunnel && busy(tunnel.status)
     ? "下次启动才生效。"
     : "";
+  noteInput.value = tunnel?.note ?? "";
   hostInput.value = tunnel?.host ?? "";
   portInput.value = String(tunnel?.port ?? 22);
   userInput.value = tunnel?.user ?? "";
   passwordInput.value = tunnel?.password ?? "";
   passwordInput.type = "password";
-  document.querySelector<HTMLButtonElement>("#toggle-password")!.textContent = "显示";
+  paintPasswordToggle(false);
   deleteButton.hidden = !tunnel;
   document.querySelector<HTMLButtonElement>("#copy-tunnel-edit")!.hidden = !tunnel;
   document.querySelector<HTMLButtonElement>("#export-tunnel-edit")!.hidden = !tunnel;
@@ -275,7 +306,7 @@ function openEditor(tunnel?: Tunnel) {
   const forwards = tunnel?.forwards.length ? tunnel.forwards : [blankForward()];
   for (const forward of forwards) addForwardRow(forward);
   editor.showModal();
-  hostInput.focus();
+  noteInput.focus();
 }
 
 function syncDock() {
@@ -302,8 +333,9 @@ function syncDock() {
     return;
   }
   dock?.classList.remove("idle");
-  dockTitle.textContent = `${tunnel.user}@${tunnel.host}`;
-  fillForwards(dockMeta, tunnel.forwards);
+  dockTitle.textContent = tunnel.note || `${tunnel.user}@${tunnel.host}`;
+  dockTitle.title = tunnel.note ? `${tunnel.user}@${tunnel.host}` : "";
+  fillForwards(dockMeta, tunnel.forwards, true);
   paintStatus(dockStatus, tunnel.status, tunnel.connectedAt);
   if (changed) {
     if (previousId !== nextId) {
@@ -329,14 +361,25 @@ function peerOf(host: string): TailscaleMachine | undefined {
   });
 }
 
-function fillForwards(target: HTMLElement, forwards: Forward[]) {
+function fillForwards(target: HTMLElement, forwards: Forward[], compact = false) {
   target.replaceChildren();
-  forwards.forEach((forward, index) => {
-    if (index > 0) target.append(document.createTextNode("   "));
+  if (compact) {
+    for (const forward of forwards) {
+      const line = document.createElement("span");
+      line.className = "forward-text";
+      line.textContent = `${forward.localPort} → ${forward.remoteHost}:${forward.remotePort}`;
+      target.append(line);
+    }
+    return;
+  }
+  for (const forward of forwards) {
+    const chip = document.createElement("span");
+    chip.className = "forward";
     const port = document.createElement("button");
     port.type = "button";
     port.className = "port";
-    port.textContent = String(forward.localPort);
+    port.title = `用浏览器打开 localhost:${forward.localPort}`;
+    port.append(document.createTextNode(String(forward.localPort)), icon("external-link-line"));
     port.setAttribute("aria-label", `用浏览器打开 localhost:${forward.localPort}`);
     port.addEventListener("click", () => {
       void invoke("open_local", { port: forward.localPort }).catch((error: unknown) => {
@@ -344,8 +387,12 @@ function fillForwards(target: HTMLElement, forwards: Forward[]) {
         summary.className = "info bad";
       });
     });
-    target.append(port, document.createTextNode(` → ${forward.remoteHost}:${forward.remotePort}`));
-  });
+    const remote = document.createElement("span");
+    remote.className = "remote";
+    remote.textContent = `${forward.remoteHost}:${forward.remotePort}`;
+    chip.append(port, icon("arrow-right-line"), remote);
+    target.append(chip);
+  }
 }
 
 function paintStatus(el: HTMLElement, status: TunnelStatus, connectedAt: number | null) {
@@ -428,15 +475,22 @@ function tunnelById(id: string | null): Tunnel | undefined {
   return snapshot.tunnels.find((item) => item.id === id);
 }
 
+function flashLabel(button: HTMLButtonElement, text: string) {
+  const label = button.querySelector("span") ?? button;
+  const original = button.dataset.label ?? label.textContent ?? "";
+  button.dataset.label = original;
+  label.textContent = text;
+  button.classList.add("done");
+  window.setTimeout(() => {
+    label.textContent = original;
+    button.classList.remove("done");
+  }, 1200);
+}
+
 async function copyTunnel(tunnel: Tunnel, button: HTMLButtonElement) {
-  const label = button.dataset.label ?? button.textContent ?? "复制";
-  button.dataset.label = label;
   try {
     await navigator.clipboard.writeText(copyText(tunnel));
-    button.textContent = "已复制";
-    window.setTimeout(() => {
-      button.textContent = label;
-    }, 1200);
+    flashLabel(button, "已复制");
   } catch {
     summary.textContent = "没有复制。";
     summary.className = "info bad";
@@ -444,8 +498,6 @@ async function copyTunnel(tunnel: Tunnel, button: HTMLButtonElement) {
 }
 
 async function exportTunnel(tunnel: Tunnel, button: HTMLButtonElement) {
-  const label = button.dataset.label ?? button.textContent ?? "导出";
-  button.dataset.label = label;
   try {
     const picked = await save({
       title: "导出隧道",
@@ -454,10 +506,7 @@ async function exportTunnel(tunnel: Tunnel, button: HTMLButtonElement) {
     });
     if (typeof picked !== "string") return;
     await invoke("export_tunnel", { id: tunnel.id, path: picked });
-    button.textContent = "已导出";
-    window.setTimeout(() => {
-      button.textContent = label;
-    }, 1200);
+    flashLabel(button, "已导出");
   } catch (error) {
     summary.textContent = errorText(error);
     summary.className = "info bad";
@@ -507,8 +556,11 @@ type TailscaleReport = {
   message: string;
 };
 
+const viewTitles: Record<AppView, string> = { tunnels: "隧道", tailscale: "Tailscale", settings: "设置" };
+
 function showView(view: AppView) {
   document.body.dataset.view = view;
+  document.querySelector<HTMLElement>("#page-title")!.textContent = viewTitles[view];
   document.querySelector<HTMLElement>("#view-tunnels")!.hidden = view !== "tunnels";
   document.querySelector<HTMLElement>("#view-tailscale")!.hidden = view !== "tailscale";
   document.querySelector<HTMLElement>("#view-settings")!.hidden = view !== "settings";
@@ -518,98 +570,94 @@ function showView(view: AppView) {
   if (view === "tailscale") void refreshMachines(true);
 }
 
-function iconSvg(path: string): SVGSVGElement {
-  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-  svg.setAttribute("viewBox", "0 0 16 16");
-  svg.setAttribute("width", "14");
-  svg.setAttribute("height", "14");
-  svg.setAttribute("aria-hidden", "true");
-  svg.innerHTML = path;
-  return svg;
-}
-
-function copyGlyph(): SVGSVGElement {
-  return iconSvg(
-    '<rect x="5.2" y="5.2" width="8" height="8" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M2.6 10.4V2.6h7.8" fill="none" stroke="currentColor" stroke-width="1.4"/>',
-  );
-}
-
-function checkGlyph(): SVGSVGElement {
-  return iconSvg(
-    '<path d="M3 8.2 6.2 11.4 13 4.6" fill="none" stroke="currentColor" stroke-width="1.6"/>',
-  );
-}
-
 function paintTailscale(report: TailscaleReport) {
   const body = document.querySelector<HTMLElement>("#tailscale-body")!;
   body.replaceChildren();
   if (!report.installed || report.message) {
-    const note = document.createElement("p");
-    note.className = "notice";
-    note.textContent = report.message || "读不到 Tailscale。";
-    body.append(note);
+    body.append(emptyState("no-tailscale", "读不到 Tailscale", report.message || "这台 Mac 上没有可用的 Tailscale。"));
     return;
   }
+  const card = document.createElement("div");
+  card.className = "card machine-list";
+  for (const machine of report.machines) {
+    const row = document.createElement("div");
+    row.className = machine.online ? "machine live" : "machine";
+    const tile = document.createElement("span");
+    tile.className = "tile";
+    tile.append(icon(machine.here ? "macbook-line" : "server-line"));
+    const name = document.createElement("span");
+    name.className = "machine-name";
+    const host = document.createElement("span");
+    host.className = "identity";
+    host.textContent = machine.hostName;
+    name.append(host);
+    if (machine.here) {
+      const here = document.createElement("span");
+      here.className = "here";
+      here.textContent = "本机";
+      name.append(here);
+    }
+    const address = document.createElement("span");
+    address.className = "machine-address";
+    const ip = document.createElement("span");
+    ip.className = "ip";
+    ip.textContent = machine.ipv4;
+    const copy = document.createElement("button");
+    copy.type = "button";
+    copy.className = "icon copy";
+    copy.title = "复制地址";
+    copy.setAttribute("aria-label", "复制");
+    copy.append(icon("file-copy-line"));
+    copy.disabled = machine.ipv4.length === 0;
+    copy.addEventListener("click", () => {
+      void navigator.clipboard.writeText(machine.ipv4).then(() => {
+        copy.replaceChildren(icon("check-line"));
+        copy.classList.add("done");
+        copy.setAttribute("aria-label", "已复制");
+        window.setTimeout(() => {
+          copy.replaceChildren(icon("file-copy-line"));
+          copy.classList.remove("done");
+          copy.setAttribute("aria-label", "复制");
+        }, 1200);
+      });
+    });
+    address.append(ip, copy);
+    const state = document.createElement("span");
+    state.className = "machine-state";
+    if (machine.path) {
+      const path = document.createElement("span");
+      path.className = machine.path.startsWith("DERP") ? "path derp" : "path direct";
+      path.textContent = machine.path;
+      state.append(path);
+    }
+    const presence = document.createElement("span");
+    presence.className = machine.online ? "status running" : "status stopped";
+    presence.textContent = machine.online ? "Online" : "Offline";
+    state.append(presence);
+    row.append(tile, name, address, state);
+    card.append(row);
+  }
+  if (report.machines.length > 0) body.append(card);
   const others = report.machines.filter((machine) => !machine.here);
   if (others.length === 0) {
-    const note = document.createElement("p");
-    note.className = "notice";
-    note.textContent = "网里还没有其他机器。";
-    body.append(note);
+    const again = labeledButton("refresh-line", "再看一次", "accent");
+    again.addEventListener("click", () => {
+      void refreshMachines(true);
+    });
+    body.append(emptyState(
+      "lonely-tailnet",
+      "网里还没有其他机器",
+      "在别的设备上登录同一个 Tailscale 账号，它就会出现在这里。",
+      again,
+    ));
   }
-  for (const machine of report.machines) {
-      const row = document.createElement("div");
-      row.className = machine.online ? "machine live" : "machine";
-      const name = document.createElement("span");
-      name.className = "machine-name";
-      const host = document.createElement("span");
-      host.className = "identity";
-      host.textContent = machine.hostName;
-      name.append(host);
-      if (machine.here) {
-        const here = document.createElement("button");
-        here.type = "button";
-        here.className = "here";
-        here.textContent = "本机";
-        name.append(here);
-      }
-      const address = document.createElement("span");
-      address.className = "machine-address";
-      const ip = document.createElement("span");
-      ip.className = "detail";
-      ip.textContent = machine.ipv4;
-      const copy = document.createElement("button");
-      copy.type = "button";
-      copy.className = "copy";
-      copy.setAttribute("aria-label", "复制");
-      copy.append(copyGlyph());
-      copy.disabled = machine.ipv4.length === 0;
-      copy.addEventListener("click", () => {
-        void navigator.clipboard.writeText(machine.ipv4).then(() => {
-          copy.replaceChildren(checkGlyph());
-          copy.setAttribute("aria-label", "已复制");
-          window.setTimeout(() => {
-            copy.replaceChildren(copyGlyph());
-            copy.setAttribute("aria-label", "复制");
-          }, 1200);
-        });
-      });
-      address.append(ip, copy);
-      const state = document.createElement("span");
-      state.className = "machine-state";
-      const presence = document.createElement("span");
-      presence.className = machine.online ? "status running" : "status stopped";
-      presence.textContent = machine.online ? "Online" : "Offline";
-      state.append(presence);
-      if (machine.path) {
-        const path = document.createElement("span");
-        path.className = machine.path.startsWith("DERP") ? "path derp" : "path direct";
-        path.textContent = machine.path;
-        state.append(path);
-      }
-      row.append(name, address, state);
-      body.append(row);
-    }
+}
+
+function pendingNote(): HTMLElement {
+  const line = document.createElement("p");
+  line.className = "notice pending";
+  line.append(icon("loader-4-line"), document.createTextNode("正在读取"));
+  return line;
 }
 
 function fillHostPicks() {
@@ -622,7 +670,7 @@ function fillHostPicks() {
     box.append(line);
   };
   if (!tailscaleReport) {
-    note("正在读取");
+    box.append(pendingNote());
     return;
   }
   if (!tailscaleReport.installed || tailscaleReport.message) {
@@ -638,9 +686,18 @@ function fillHostPicks() {
     const button = document.createElement("button");
     button.type = "button";
     button.className = "host-pick";
-    button.textContent = machine.path
-      ? `${machine.hostName}   ${machine.ipv4}   ${machine.online ? "在线" : "离线"}   ${machine.path}`
-      : `${machine.hostName}   ${machine.ipv4}   ${machine.online ? "在线" : "离线"}`;
+    const name = document.createElement("span");
+    name.className = "identity";
+    name.textContent = machine.hostName;
+    const ip = document.createElement("span");
+    ip.className = "ip";
+    ip.textContent = machine.ipv4;
+    const presence = document.createElement("span");
+    presence.className = machine.online ? "peer on" : "peer off";
+    presence.textContent = machine.path
+      ? `${machine.online ? "在线" : "离线"} · ${machine.path}`
+      : machine.online ? "在线" : "离线";
+    button.append(icon("server-line"), name, ip, presence);
     button.addEventListener("click", () => {
       hostInput.value = machine.ipv4;
       box.hidden = true;
@@ -655,11 +712,7 @@ async function refreshMachines(manual: boolean) {
   machinesInFlight = true;
   const body = document.querySelector<HTMLElement>("#tailscale-body")!;
   if (manual && document.body.dataset.view === "tailscale") {
-    body.replaceChildren();
-    const pending = document.createElement("p");
-    pending.className = "notice";
-    pending.textContent = "正在读取";
-    body.append(pending);
+    body.replaceChildren(pendingNote());
   }
   try {
     const report = await invoke<TailscaleReport>("tailscale_status");
@@ -677,11 +730,7 @@ async function refreshMachines(manual: boolean) {
     if (!picks.hidden) fillHostPicks();
   } catch (error) {
     if (document.body.dataset.view === "tailscale") {
-      body.replaceChildren();
-      const note = document.createElement("p");
-      note.className = "notice";
-      note.textContent = errorText(error);
-      body.append(note);
+      body.replaceChildren(emptyState("no-tailscale", "读不到 Tailscale", errorText(error)));
     }
     const picks = document.querySelector<HTMLElement>("#host-picks")!;
     if (!picks.hidden && !tailscaleReport) {
@@ -737,11 +786,19 @@ document.querySelector<HTMLButtonElement>("#export-tunnel-edit")!.addEventListen
 });
 document.querySelector<HTMLButtonElement>("#add-forward")!.addEventListener("click", () => addForwardRow());
 document.querySelector<HTMLButtonElement>("#cancel-edit")!.addEventListener("click", () => editor.close());
+document.querySelector<HTMLButtonElement>("#close-edit")!.addEventListener("click", () => editor.close());
 document.querySelector<HTMLButtonElement>("#toggle-password")!.addEventListener("click", () => {
   const show = passwordInput.type === "password";
   passwordInput.type = show ? "text" : "password";
-  document.querySelector<HTMLButtonElement>("#toggle-password")!.textContent = show ? "隐藏" : "显示";
+  paintPasswordToggle(show);
 });
+
+function paintPasswordToggle(shown: boolean) {
+  const button = document.querySelector<HTMLButtonElement>("#toggle-password")!;
+  button.replaceChildren(icon(shown ? "eye-off-line" : "eye-line"));
+  button.setAttribute("aria-label", shown ? "隐藏密码" : "显示密码");
+  button.title = shown ? "隐藏密码" : "显示密码";
+}
 
 deleteButton.addEventListener("click", () => {
   if (!editingId) return;
@@ -760,6 +817,7 @@ editorForm.addEventListener("submit", (event) => {
   formError.hidden = true;
   const draft = {
     id: editingId,
+    note: noteInput.value,
     host: hostInput.value,
     port: Number(portInput.value),
     user: userInput.value,

@@ -195,7 +195,10 @@ pub fn parse_status(text: &str) -> Result<TailscaleReport, String> {
             .then(right.online.cmp(&left.online))
             .then(left.host_name.cmp(&right.host_name))
     });
-    let online_peers = machines.iter().filter(|machine| machine.online && !machine.here).count() as u32;
+    let online_peers = machines
+        .iter()
+        .filter(|machine| machine.online && !machine.here)
+        .count() as u32;
     Ok(TailscaleReport {
         installed: true,
         state_label: state_label(&state).into(),
@@ -234,7 +237,11 @@ fn machine_from(value: &serde_json::Value, here: bool) -> TailscaleMachine {
         ipv4: first_ipv4(value.get("TailscaleIPs")).unwrap_or_default(),
         online,
         here,
-        path: if online { path_label(value) } else { String::new() },
+        path: if online {
+            path_label(value)
+        } else {
+            String::new()
+        },
     }
 }
 

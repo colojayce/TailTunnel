@@ -1,13 +1,13 @@
 use crate::model::{
+    LogEntry, LogPage, MAX_LOG_CHARS, Snapshot, Tunnel, TunnelDraft, TunnelStatus, TunnelView,
     config_file, display_command, load_store_at, save_store_at, set_private, ssh_args,
-    tunnel_export, validate_draft, LogEntry, LogPage, Snapshot, Tunnel, TunnelDraft, TunnelStatus,
-    TunnelView, MAX_LOG_CHARS,
+    tunnel_export, validate_draft,
 };
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 pub struct Running {
     pub pid: u32,
@@ -24,6 +24,7 @@ struct Live {
     floor: u64,
     connected_at: Option<u64>,
     running: Option<Running>,
+    starting: bool,
 }
 
 pub struct LogUpdate {
@@ -144,11 +145,7 @@ impl TunnelManager {
     }
 
     pub fn set_tunnel_file(&mut self, path: PathBuf) -> Result<(), String> {
-        if self
-            .live
-            .values()
-            .any(|live| live.running.is_some())
-        {
+        if self.live.values().any(|live| live.running.is_some()) {
             return Err("先停掉正在跑的隧道，再更换配置文件。".into());
         }
         let path = if path.is_absolute() {
@@ -191,6 +188,9 @@ impl TunnelManager {
     }
 
     pub fn prepare_start(&mut self, id: &str) -> Result<StartPlan, String> {
+        if self.live.get(id).is_some_and(|live| live.starting) {
+            return Err("这条隧道正在连接。".into());
+        }
         if self.running_pid(id).is_some() {
             let connecting = self
                 .live
@@ -222,6 +222,8 @@ impl TunnelManager {
             live.message = None;
             live.last_line = None;
             live.connected_at = None;
+            live.status = TunnelStatus::Connecting;
+            live.starting = true;
         }
         self.selected = Some(id.to_string());
         Ok(StartPlan {
@@ -235,10 +237,14 @@ impl TunnelManager {
     }
 
     pub fn attach(&mut self, id: &str, running: Running) {
-        let live = self.live.entry(id.to_string()).or_insert_with(Live::stopped);
+        let live = self
+            .live
+            .entry(id.to_string())
+            .or_insert_with(Live::stopped);
         live.status = TunnelStatus::Connecting;
         live.message = None;
         live.connected_at = None;
+        live.starting = false;
         live.running = Some(running);
     }
 
@@ -249,6 +255,7 @@ impl TunnelManager {
         live.message = Some(message.clone());
         live.connected_at = None;
         live.running = None;
+        live.starting = false;
         Some(append_line(live, &message))
     }
 
@@ -256,9 +263,11 @@ impl TunnelManager {
         let live = self.live.get_mut(id)?;
         let seq = append_line(live, line);
         let trimmed = trim_message(line);
-        live.last_line = Some(trimmed.clone());
-        if live.status == TunnelStatus::Failed {
-            live.message = Some(trimmed);
+        if !is_noise_line(line) {
+            live.last_line = Some(trimmed.clone());
+            if live.status == TunnelStatus::Failed {
+                live.message = Some(trimmed);
+            }
         }
         let mut established = false;
         if live.status == TunnelStatus::Connecting && session_ready(line) {
@@ -277,6 +286,7 @@ impl TunnelManager {
         };
         live.running = None;
         live.connected_at = None;
+        live.starting = false;
         if intentional {
             live.status = TunnelStatus::Stopped;
             live.message = None;
@@ -297,6 +307,65 @@ impl TunnelManager {
                 append_line(live, &message);
             }
         }
+        true
+    }
+
+    pub fn address_in_use_ports(&self, id: &str) -> Vec<u16> {
+        let Some(live) = self.live.get(id) else {
+            return Vec::new();
+        };
+        if live.status != TunnelStatus::Failed {
+            return Vec::new();
+        }
+        let hit = live
+            .lines
+            .iter()
+            .any(|entry| mentions_address_in_use(&entry.line))
+            || live.message.as_deref().is_some_and(mentions_address_in_use);
+        if !hit {
+            return Vec::new();
+        }
+        let Some(tunnel) = self.tunnels.iter().find(|tunnel| tunnel.id == id) else {
+            return Vec::new();
+        };
+        let mut ports: Vec<u16> = tunnel
+            .forwards
+            .iter()
+            .map(|forward| forward.local_port)
+            .collect();
+        ports.sort_unstable();
+        ports.dedup();
+        let mut named = Vec::new();
+        for line in live
+            .lines
+            .iter()
+            .map(|entry| entry.line.as_str())
+            .chain(live.message.as_deref())
+        {
+            if !mentions_address_in_use(line) {
+                continue;
+            }
+            for port in &ports {
+                if line_mentions_port(line, *port) && !named.contains(port) {
+                    named.push(*port);
+                }
+            }
+        }
+        if named.is_empty() { ports } else { named }
+    }
+
+    pub fn log_token(&self, id: &str) -> Option<u64> {
+        self.live.get(id).map(|live| live.next_seq)
+    }
+
+    pub fn set_failure_message(&mut self, id: &str, message: String, token: u64) -> bool {
+        let Some(live) = self.live.get_mut(id) else {
+            return false;
+        };
+        if live.status != TunnelStatus::Failed || live.next_seq != token {
+            return false;
+        }
+        live.message = Some(message);
         true
     }
 
@@ -322,12 +391,15 @@ impl TunnelManager {
         let live = self.live.get(&tunnel.id);
         TunnelView {
             id: tunnel.id.clone(),
+            note: tunnel.note.clone(),
             host: tunnel.host.clone(),
             port: tunnel.port,
             user: tunnel.user.clone(),
             password: tunnel.password.clone(),
             forwards: tunnel.forwards.clone(),
-            status: live.map(|item| item.status).unwrap_or(TunnelStatus::Stopped),
+            status: live
+                .map(|item| item.status)
+                .unwrap_or(TunnelStatus::Stopped),
             message: live.and_then(|item| item.message.clone()),
             connected_at: live.and_then(|item| item.connected_at),
         }
@@ -358,12 +430,114 @@ impl Live {
             floor: 0,
             connected_at: None,
             running: None,
+            starting: false,
         }
     }
 }
 
 pub fn session_ready(line: &str) -> bool {
     line.contains("Local forwarding listening") || line.contains("Entering interactive session")
+}
+
+fn is_noise_line(line: &str) -> bool {
+    let trimmed = line.trim();
+    trimmed.starts_with("debug1:")
+        || trimmed.starts_with("debug2:")
+        || trimmed.starts_with("debug3:")
+        || trimmed.starts_with("OpenSSH_")
+        || trimmed.starts_with("Authenticated to ")
+        || trimmed.starts_with("Transferred:")
+        || trimmed.starts_with("Bytes per second:")
+}
+
+fn mentions_address_in_use(line: &str) -> bool {
+    line.to_ascii_lowercase().contains("address already in use")
+}
+
+fn line_mentions_port(line: &str, port: u16) -> bool {
+    let token = port.to_string();
+    line.split(|ch: char| !ch.is_ascii_digit())
+        .any(|part| part == token)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Listener {
+    pub command: String,
+    pub pid: u32,
+}
+
+pub fn parse_lsof(output: &str) -> Vec<Listener> {
+    let mut rows = Vec::new();
+    let mut pid: Option<u32> = None;
+    let mut command = String::new();
+    let mut listen = false;
+    let flush = |rows: &mut Vec<(u32, String, bool)>,
+                 pid: &mut Option<u32>,
+                 command: &mut String,
+                 listen: &mut bool| {
+        if let Some(pid_value) = pid.take() {
+            let name = if command.is_empty() {
+                "未知进程".to_string()
+            } else {
+                std::mem::take(command)
+            };
+            rows.push((pid_value, name, *listen));
+        } else {
+            command.clear();
+        }
+        *listen = false;
+    };
+    for line in output.lines() {
+        let line = line.trim_end_matches('\r');
+        if line.chars().next().is_some_and(|ch| ch.is_ascii_digit()) {
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix('p') {
+            if !rest.is_empty() && rest.chars().all(|ch| ch.is_ascii_digit()) {
+                flush(&mut rows, &mut pid, &mut command, &mut listen);
+                pid = rest.parse().ok();
+                continue;
+            }
+        }
+        if pid.is_none() {
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix('c') {
+            if command.is_empty() {
+                command = rest.to_string();
+            }
+            continue;
+        }
+        if line == "TST=LISTEN" {
+            listen = true;
+        }
+    }
+    flush(&mut rows, &mut pid, &mut command, &mut listen);
+    let mut seen = Vec::new();
+    let mut listeners = Vec::new();
+    for (pid, command, listen) in rows {
+        if !listen {
+            continue;
+        }
+        if seen.contains(&pid) {
+            continue;
+        }
+        seen.push(pid);
+        listeners.push(Listener { command, pid });
+    }
+    listeners
+}
+
+pub fn conflict_sentence(port: u16, listeners: &[Listener]) -> Option<String> {
+    if listeners.is_empty() {
+        return None;
+    }
+    let who = listeners
+        .iter()
+        .map(|item| format!("{}（pid {}）", item.command, item.pid))
+        .collect::<Vec<_>>()
+        .join("、");
+    Some(format!("端口 {port} 已被 {who}占用。"))
 }
 
 fn append_line(live: &mut Live, line: &str) -> u64 {
@@ -483,7 +657,7 @@ fn clear_password_files(dir: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{ForwardDraft, TunnelDraft, TunnelStatus, MAX_LOG_CHARS};
+    use crate::model::{ForwardDraft, MAX_LOG_CHARS, TunnelDraft, TunnelStatus};
     use std::fs;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -491,6 +665,7 @@ mod tests {
     fn draft() -> TunnelDraft {
         TunnelDraft {
             id: None,
+            note: String::new(),
             host: "100.64.1.2".into(),
             port: 22,
             user: "root".into(),
@@ -512,6 +687,26 @@ mod tests {
     }
 
     #[test]
+    fn note_is_kept_and_falls_back_to_the_host() {
+        let (dir, mut manager) = loaded();
+        let id = manager.upsert(draft()).unwrap();
+        let saved = manager.snapshot().tunnels.into_iter().next().unwrap();
+        assert_eq!(saved.note, "");
+        assert_eq!(saved.host, "100.64.1.2");
+
+        let mut item = draft();
+        item.id = Some(id.clone());
+        item.note = "  \u{200b}\u{3000}家里的 NAS\n ".into();
+        manager.upsert(item).unwrap();
+        let renamed = manager.snapshot().tunnels.into_iter().next().unwrap();
+        assert_eq!(renamed.note, "家里的 NAS");
+
+        let reloaded = TunnelManager::load(dir.clone()).expect("重新读取");
+        assert_eq!(reloaded.snapshot().tunnels[0].note, "家里的 NAS");
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn stays_connecting_until_the_forward_is_listening() {
         let (dir, mut manager) = loaded();
         let id = manager.upsert(draft()).unwrap();
@@ -529,7 +724,10 @@ mod tests {
         assert!(view.connected_at.is_none());
 
         let early = manager
-            .push_log(&id, "debug1: Connecting to 100.64.1.2 [100.64.1.2] port 22.")
+            .push_log(
+                &id,
+                "debug1: Connecting to 100.64.1.2 [100.64.1.2] port 22.",
+            )
             .unwrap();
         assert!(!early.established);
         assert_eq!(
@@ -538,7 +736,10 @@ mod tests {
         );
 
         let ready = manager
-            .push_log(&id, "debug1: Local forwarding listening on 127.0.0.1 port 8080.")
+            .push_log(
+                &id,
+                "debug1: Local forwarding listening on 127.0.0.1 port 8080.",
+            )
             .unwrap();
         assert!(ready.established);
         let view = manager.snapshot().tunnels.into_iter().next().unwrap();
@@ -546,7 +747,10 @@ mod tests {
         let started = view.connected_at.expect("已记录连接时间");
 
         let again = manager
-            .push_log(&id, "debug1: Local forwarding listening on 127.0.0.1 port 8080.")
+            .push_log(
+                &id,
+                "debug1: Local forwarding listening on 127.0.0.1 port 8080.",
+            )
             .unwrap();
         assert!(!again.established);
         assert_eq!(manager.snapshot().tunnels[0].connected_at, Some(started));
@@ -570,10 +774,7 @@ mod tests {
             .push_log(&id, "debug1: Entering interactive session.")
             .unwrap();
         assert!(ready.established);
-        assert_eq!(
-            manager.snapshot().tunnels[0].status,
-            TunnelStatus::Running
-        );
+        assert_eq!(manager.snapshot().tunnels[0].status, TunnelStatus::Running);
         let _ = fs::remove_dir_all(dir);
     }
 
@@ -598,12 +799,13 @@ mod tests {
         manager.prepare_start(&id).unwrap();
         manager.push_log(&id, "a").unwrap();
         manager.push_log(&id, "b").unwrap();
+        manager.fail_start(&id, &dir.join(format!("pw-{id}")), "没连上".into());
         manager.prepare_start(&id).unwrap();
         let page = manager.log_of(&id);
         assert!(page.lines.is_empty());
-        assert_eq!(page.floor, 2);
+        assert_eq!(page.floor, 3);
         let next = manager.push_log(&id, "c").unwrap();
-        assert_eq!(next.seq, 2);
+        assert_eq!(next.seq, 3);
         let _ = fs::remove_dir_all(dir);
     }
 
@@ -621,6 +823,256 @@ mod tests {
         assert_eq!(page.lines[1].seq, 2);
         assert!(super::log_bytes(&page.lines) <= MAX_LOG_CHARS);
         let _ = fs::remove_dir_all(dir);
+    }
+
+    fn running(manager: &mut TunnelManager, id: &str) {
+        let plan = manager.prepare_start(id).unwrap();
+        manager.attach(
+            id,
+            Running {
+                pid: 424_242,
+                stop_requested: plan.stop_requested,
+                pw_file: plan.pw_file,
+            },
+        );
+    }
+
+    #[test]
+    fn failure_reason_keeps_the_plain_line_when_debug_follows() {
+        let (dir, mut manager) = loaded();
+        let id = manager.upsert(draft()).unwrap();
+        running(&mut manager, &id);
+        manager.push_log(&id, "ssh -N -v root@100.64.1.2").unwrap();
+        manager
+            .push_log(
+                &id,
+                "root@100.64.1.2: Permission denied (publickey,password).",
+            )
+            .unwrap();
+        manager
+            .push_log(
+                &id,
+                "debug1: Authentications that can continue: publickey,password",
+            )
+            .unwrap();
+        manager.push_log(&id, "debug2: more detail").unwrap();
+        manager.push_log(&id, "debug3: even more").unwrap();
+        assert!(manager.mark_exit(&id, false, Some(255)));
+        let view = manager.snapshot().tunnels.into_iter().next().unwrap();
+        assert_eq!(view.status, TunnelStatus::Failed);
+        assert_eq!(
+            view.message.as_deref(),
+            Some("root@100.64.1.2: Permission denied (publickey,password).")
+        );
+        manager
+            .push_log(&id, "debug1: this arrived after exit")
+            .unwrap();
+        assert_eq!(
+            manager.snapshot().tunnels[0].message.as_deref(),
+            Some("root@100.64.1.2: Permission denied (publickey,password).")
+        );
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn failure_without_a_plain_line_uses_the_exit_code() {
+        let (dir, mut manager) = loaded();
+        let id = manager.upsert(draft()).unwrap();
+        running(&mut manager, &id);
+        manager.push_log(&id, "ssh -N -v root@100.64.1.2").unwrap();
+        manager
+            .push_log(&id, "debug1: Connecting to 100.64.1.2 port 22.")
+            .unwrap();
+        assert!(manager.mark_exit(&id, false, Some(255)));
+        assert_eq!(
+            manager.snapshot().tunnels[0].message.as_deref(),
+            Some("进程已退出，退出码 255")
+        );
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn verbose_summary_lines_do_not_become_the_reason() {
+        let (dir, mut manager) = loaded();
+        let id = manager.upsert(draft()).unwrap();
+        running(&mut manager, &id);
+        for line in [
+            "OpenSSH_9.9p2, LibreSSL 3.3.6",
+            "Authenticated to 100.64.1.2 ([100.64.1.2]:22) using \"password\".",
+            "Connection to 100.64.1.2 port 22 timed out",
+            "Transferred: sent 1232, received 1424 bytes, in 45.1 seconds",
+            "Bytes per second: sent 27.3, received 31.6",
+        ] {
+            manager.push_log(&id, line).unwrap();
+        }
+        assert!(manager.mark_exit(&id, false, Some(255)));
+        assert_eq!(
+            manager.snapshot().tunnels[0].message.as_deref(),
+            Some("Connection to 100.64.1.2 port 22 timed out")
+        );
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_second_start_is_refused_before_the_process_is_attached() {
+        let (dir, mut manager) = loaded();
+        let id = manager.upsert(draft()).unwrap();
+        manager.prepare_start(&id).unwrap();
+        assert_eq!(
+            manager.snapshot().tunnels[0].status,
+            TunnelStatus::Connecting
+        );
+        assert_eq!(
+            manager.prepare_start(&id).err().as_deref(),
+            Some("这条隧道正在连接。")
+        );
+        manager.fail_start(&id, &dir.join(format!("pw-{id}")), "无法启动 ssh".into());
+        assert_eq!(manager.snapshot().tunnels[0].status, TunnelStatus::Failed);
+        manager.prepare_start(&id).unwrap();
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn port_note_is_dropped_once_the_tunnel_restarts() {
+        let (dir, mut manager) = loaded();
+        let id = manager.upsert(draft()).unwrap();
+        running(&mut manager, &id);
+        manager
+            .push_log(&id, "bind [127.0.0.1]:8080: Address already in use")
+            .unwrap();
+        assert!(manager.mark_exit(&id, false, Some(255)));
+        let token = manager.log_token(&id).unwrap();
+        manager.prepare_start(&id).unwrap();
+        assert!(!manager.set_failure_message(
+            &id,
+            "端口 8080 已被 ssh（pid 7）占用。".into(),
+            token
+        ));
+        assert!(manager.snapshot().tunnels[0].message.is_none());
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn address_in_use_lists_local_ports_after_failure() {
+        let (dir, mut manager) = loaded();
+        let mut item = draft();
+        item.forwards.push(ForwardDraft {
+            local_port: 9090,
+            remote_host: "127.0.0.1".into(),
+            remote_port: 90,
+        });
+        let id = manager.upsert(item).unwrap();
+        running(&mut manager, &id);
+        manager
+            .push_log(&id, "bind [127.0.0.1]:8080: Address already in use")
+            .unwrap();
+        manager
+            .push_log(&id, "Could not request local forwarding.")
+            .unwrap();
+        assert!(manager.address_in_use_ports(&id).is_empty());
+        assert!(manager.mark_exit(&id, false, Some(255)));
+        assert_eq!(manager.address_in_use_ports(&id), vec![8080]);
+        assert_eq!(
+            manager.snapshot().tunnels[0].message.as_deref(),
+            Some("Could not request local forwarding.")
+        );
+        manager
+            .push_log(&id, "channel setup: Address already in use")
+            .unwrap();
+        assert_eq!(manager.address_in_use_ports(&id), vec![8080]);
+        assert!(manager.set_failure_message(
+            &id,
+            "端口 8080 已被 ssh（pid 7）占用。".into(),
+            manager.log_token(&id).unwrap(),
+        ));
+        assert_eq!(
+            manager.snapshot().tunnels[0].message.as_deref(),
+            Some("端口 8080 已被 ssh（pid 7）占用。")
+        );
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn unnamed_address_in_use_checks_every_local_port() {
+        let (dir, mut manager) = loaded();
+        let mut item = draft();
+        item.forwards.push(ForwardDraft {
+            local_port: 9090,
+            remote_host: "127.0.0.1".into(),
+            remote_port: 90,
+        });
+        let id = manager.upsert(item).unwrap();
+        running(&mut manager, &id);
+        manager
+            .push_log(&id, "channel setup: Address already in use")
+            .unwrap();
+        assert!(manager.mark_exit(&id, false, Some(255)));
+        assert_eq!(manager.address_in_use_ports(&id), vec![8080, 9090]);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn stopped_tunnel_does_not_report_address_in_use() {
+        let (dir, mut manager) = loaded();
+        let id = manager.upsert(draft()).unwrap();
+        running(&mut manager, &id);
+        manager
+            .push_log(&id, "bind [127.0.0.1]:8080: Address already in use")
+            .unwrap();
+        assert!(manager.mark_exit(&id, true, Some(0)));
+        assert!(manager.address_in_use_ports(&id).is_empty());
+        assert!(!manager.set_failure_message(
+            &id,
+            "不应写上".into(),
+            manager.log_token(&id).unwrap(),
+        ));
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn lsof_parser_keeps_only_listeners_and_formats_the_reason() {
+        let output = "\
+p4242
+cssh
+f5
+TST=LISTEN
+p99
+cnode
+f3
+TST=ESTABLISHED
+p4242
+cssh
+f6
+TST=LISTEN
+";
+        assert_eq!(
+            super::parse_lsof(output),
+            vec![super::Listener {
+                command: "ssh".into(),
+                pid: 4242,
+            }]
+        );
+        assert_eq!(
+            super::conflict_sentence(8080, &super::parse_lsof(output)).as_deref(),
+            Some("端口 8080 已被 ssh（pid 4242）占用。")
+        );
+        let clients = "p99\ncnode\nT\nTST=ESTABLISHED\np100\ncunknown\nT\nTST=ESTABLISHED\n";
+        assert!(super::parse_lsof(clients).is_empty());
+        let two = [
+            super::Listener {
+                command: "node".into(),
+                pid: 99,
+            },
+            super::Listener {
+                command: "未知进程".into(),
+                pid: 100,
+            },
+        ];
+        assert_eq!(
+            super::conflict_sentence(8080, &two).as_deref(),
+            Some("端口 8080 已被 node（pid 99）、未知进程（pid 100）占用。")
+        );
+        assert!(super::conflict_sentence(8080, &[]).is_none());
     }
 }
 

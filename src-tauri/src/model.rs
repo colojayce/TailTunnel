@@ -25,6 +25,8 @@ pub enum TunnelStatus {
 #[serde(rename_all = "camelCase")]
 pub struct Tunnel {
     pub id: String,
+    #[serde(default)]
+    pub note: String,
     pub host: String,
     pub port: u16,
     pub user: String,
@@ -36,6 +38,7 @@ pub struct Tunnel {
 #[serde(rename_all = "camelCase")]
 pub struct TunnelView {
     pub id: String,
+    pub note: String,
     pub host: String,
     pub port: u16,
     pub user: String,
@@ -78,6 +81,8 @@ pub struct ForwardDraft {
 #[serde(rename_all = "camelCase")]
 pub struct TunnelDraft {
     pub id: Option<String>,
+    #[serde(default)]
+    pub note: String,
     pub host: String,
     pub port: u32,
     pub user: String,
@@ -124,6 +129,8 @@ pub fn tunnel_export(tunnel: &Tunnel) -> Result<String, String> {
     #[derive(Serialize)]
     #[serde(rename_all = "camelCase")]
     struct Document<'a> {
+        #[serde(skip_serializing_if = "str::is_empty")]
+        note: &'a str,
         host: &'a str,
         port: u16,
         user: &'a str,
@@ -131,6 +138,7 @@ pub fn tunnel_export(tunnel: &Tunnel) -> Result<String, String> {
         forwards: &'a [Forward],
     }
     serde_json::to_string_pretty(&Document {
+        note: &tunnel.note,
         host: &tunnel.host,
         port: tunnel.port,
         user: &tunnel.user,
@@ -156,7 +164,9 @@ pub fn write_private_atomic(path: &Path, text: &str) -> Result<(), String> {
             use std::os::unix::fs::OpenOptionsExt;
             options.mode(0o600);
         }
-        let mut file = options.open(&tmp).map_err(|e| format!("写入配置失败：{e}"))?;
+        let mut file = options
+            .open(&tmp)
+            .map_err(|e| format!("写入配置失败：{e}"))?;
         file.write_all(text.as_bytes())
             .map_err(|e| format!("写入配置失败：{e}"))?;
         file.sync_all().map_err(|e| format!("写入配置失败：{e}"))?;
@@ -207,6 +217,7 @@ pub fn validate_draft(draft: &TunnelDraft) -> Result<Tunnel, String> {
     if draft.password.contains(['\n', '\r']) {
         return Err("密码不能换行。".into());
     }
+    let note = clean_note(&draft.note)?;
     if draft.forwards.is_empty() {
         return Err("至少添加一行本地转发。".into());
     }
@@ -228,12 +239,28 @@ pub fn validate_draft(draft: &TunnelDraft) -> Result<Tunnel, String> {
     }
     Ok(Tunnel {
         id: String::new(),
+        note,
         host,
         port,
         user,
         password: draft.password.clone(),
         forwards,
     })
+}
+
+fn clean_note(raw: &str) -> Result<String, String> {
+    let note = raw
+        .chars()
+        .filter(|ch| *ch != '\u{200b}' && *ch != '\u{feff}')
+        .collect::<String>();
+    let note = note.trim().to_string();
+    if note.chars().count() > 40 {
+        return Err("备注最多 40 个字。".into());
+    }
+    if note.contains(['\n', '\r']) {
+        return Err("备注不能换行。".into());
+    }
+    Ok(note)
 }
 
 fn check_port(value: u32, label: &str) -> Result<u16, String> {
@@ -298,6 +325,7 @@ mod tests {
     fn sample_draft() -> TunnelDraft {
         TunnelDraft {
             id: None,
+            note: String::new(),
             host: " 100.68.115.34 ".into(),
             port: 2225,
             user: "root".into(),

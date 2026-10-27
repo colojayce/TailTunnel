@@ -11,48 +11,51 @@
   <body data-view="tunnels">
     <div class="shell">
     <nav class="nav" aria-label="菜单">
-      <button id="nav-tunnels" class="nav-item current" type="button">隧道</button>
-      <button id="nav-tailscale" class="nav-item" type="button">Tailscale</button>
-      <button id="nav-settings" class="nav-item" type="button">设置</button>
+      <p class="brand"><img class="brand-mark" src="/logo.png" alt="" />TailTunnel</p>
+      <button id="nav-tunnels" class="nav-item current" type="button"><i class="ri-route-line" aria-hidden="true"></i>隧道</button>
+      <button id="nav-tailscale" class="nav-item" type="button"><i class="ri-global-line" aria-hidden="true"></i>Tailscale</button>
+      <button id="nav-settings" class="nav-item" type="button"><i class="ri-settings-3-line" aria-hidden="true"></i>设置</button>
     </nav>
     <div class="workspace">
     <header class="top">
-      <p id="summary" class="info" role="status">正在读取</p>
-      <p class="brand"><img class="brand-mark" src="/logo.png" alt="" />TailTunnel</p>
+      <div class="top-title">
+        <h1 id="page-title">隧道</h1>
+        <p id="summary" class="info" role="status">正在读取</p>
+      </div>
       <div class="top-actions">
-        <button id="create" class="primary" type="button">新建</button>
+        <button id="refresh-tailscale" type="button"><i class="ri-refresh-line" aria-hidden="true"></i><span>刷新</span></button>
+        <button id="create" class="primary" type="button"><i class="ri-add-line" aria-hidden="true"></i><span>新建</span></button>
       </div>
     </header>
     <div id="view-tunnels" class="view">
     <div id="list" class="list"></div>
     <section class="dock idle" aria-label="终端">
       <header class="dock-top">
-        <div>
+        <span class="dock-glyph"><i class="ri-terminal-box-line" aria-hidden="true"></i></span>
+        <div class="dock-head">
           <p id="dock-title"></p>
           <div id="dock-meta" class="quiet"></div>
         </div>
         <div class="dock-side">
           <p id="dock-status" class="status stopped"></p>
-          <button id="copy-tunnel" type="button">复制</button>
-          <button id="export-tunnel" type="button">导出</button>
+          <button id="copy-tunnel" class="ghost" type="button"><i class="ri-file-copy-line" aria-hidden="true"></i><span>复制</span></button>
+          <button id="export-tunnel" class="ghost" type="button"><i class="ri-upload-2-line" aria-hidden="true"></i><span>导出</span></button>
         </div>
       </header>
       <pre id="output" class="output"></pre>
     </section>
     </div>
     <section id="view-tailscale" class="panel" hidden>
-      <div class="panel-head">
-        <h2>Tailscale</h2>
-        <button id="refresh-tailscale" type="button">刷新</button>
-      </div>
-      <div id="tailscale-body"></div>
+      <div id="tailscale-body" class="machines"></div>
     </section>
     <section id="view-settings" class="panel" hidden>
-      <h2>设置</h2>
-      <div class="setting-row">
-        <span>配置文件</span>
-        <p id="settings-path" class="path"></p>
-        <button id="pick-config" type="button">更改</button>
+      <div class="card setting-row">
+        <span class="tile"><i class="ri-file-settings-line" aria-hidden="true"></i></span>
+        <div class="setting-text">
+          <span>配置文件</span>
+          <p id="settings-path" class="path"></p>
+        </div>
+        <button id="pick-config" type="button"><i class="ri-folder-open-line" aria-hidden="true"></i><span>更改</span></button>
       </div>
       <p id="settings-error" class="form-error" hidden></p>
     </section>
@@ -62,16 +65,22 @@
     <dialog id="editor" class="sheet">
       <form id="editor-form" method="dialog">
         <header class="sheet-head">
+          <span class="tile"><i class="ri-route-line" aria-hidden="true"></i></span>
           <h2 id="editor-title">新建隧道</h2>
+          <button id="close-edit" class="icon" type="button" aria-label="关闭"><i class="ri-close-line" aria-hidden="true"></i></button>
         </header>
         <div class="sheet-body">
-        <p id="editor-note" class="quiet"></p>
+        <p id="editor-note" class="note"></p>
         <div class="fields">
+          <label class="wide">
+            备注
+            <input id="note" name="note" maxlength="40" autocomplete="off" placeholder="不填则显示主机" />
+          </label>
           <label>
             主机
             <span class="host-line">
               <input id="host" name="host" autocomplete="off" required />
-              <button id="pick-host" type="button">选择</button>
+              <button id="pick-host" type="button"><i class="ri-global-line" aria-hidden="true"></i><span>选择</span></button>
             </span>
           </label>
           <label>
@@ -87,24 +96,24 @@
             密码
             <span class="password-line">
               <input id="password" name="password" type="password" autocomplete="off" />
-              <button id="toggle-password" type="button">显示</button>
+              <button id="toggle-password" class="icon" type="button" aria-label="显示密码"><i class="ri-eye-line" aria-hidden="true"></i></button>
             </span>
           </label>
         </div>
         <div class="forward-head">
           <span>本地转发</span>
-          <button id="add-forward" type="button">加一行</button>
+          <button id="add-forward" class="ghost" type="button"><i class="ri-add-line" aria-hidden="true"></i><span>加一行</span></button>
         </div>
         <div id="forwards" class="forwards"></div>
         <p id="form-error" class="form-error" hidden></p>
         </div>
         <footer class="sheet-foot">
-          <button id="delete-tunnel" class="danger" type="button" hidden>删除</button>
-          <button id="copy-tunnel-edit" type="button" hidden>复制</button>
-          <button id="export-tunnel-edit" type="button" hidden>导出</button>
+          <button id="delete-tunnel" class="danger" type="button" hidden><i class="ri-delete-bin-line" aria-hidden="true"></i><span>删除</span></button>
+          <button id="copy-tunnel-edit" class="ghost" type="button" hidden><i class="ri-file-copy-line" aria-hidden="true"></i><span>复制</span></button>
+          <button id="export-tunnel-edit" class="ghost" type="button" hidden><i class="ri-upload-2-line" aria-hidden="true"></i><span>导出</span></button>
           <span class="spacer"></span>
           <button id="cancel-edit" type="button" value="cancel">取消</button>
-          <button class="primary" type="submit">保存</button>
+          <button class="primary" type="submit"><i class="ri-check-line" aria-hidden="true"></i><span>保存</span></button>
         </footer>
       </form>
     </dialog>
