@@ -1,35 +1,71 @@
 <p align="center">
-  <img src="./assets/readme/hero.svg" width="100%" alt="TailTunnel：一个 Mac 窗口里开关多条 SSH 本地转发。左侧是隧道列表，每条显示本地端口到远端的映射，选中后底部显示 ssh 输出。">
+  <img src="./assets/readme/hero.svg" width="100%" alt="TailTunnel 主界面：左侧为导航，中间是隧道列表，每条隧道显示本地端口到远程地址的映射和运行状态，底部终端面板显示所选隧道的 ssh 输出。">
 </p>
-
-在 Mac 上集中开关多条 SSH 本地转发。每条隧道单独启动或停止，选中后它的 ssh 输出显示在列表下面。
 
 <p align="center">
-  <img src="./assets/readme/layout.svg" width="100%" alt="一条隧道就是一次 ssh -L：同一次连接上，本机的 5432 接到远端的 127.0.0.1:5432，6379 接到 10.0.3.4:6379。">
+  <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT"></a>
+  <img src="https://img.shields.io/badge/platform-macOS-lightgrey.svg" alt="Platform: macOS">
+  <img src="https://img.shields.io/badge/built%20with-Tauri%202-24C8DB.svg" alt="Built with Tauri 2">
 </p>
 
-## 功能
+TailTunnel 是一个 macOS 桌面应用，用于管理 SSH 本地端口转发（`ssh -L`）。它在同一个窗口中集中配置、启停和监控多条隧道，并显示每条隧道的 `ssh` 输出。
 
-- 一条隧道就是一次 `ssh -L`，同一次连接上可以挂多个本地端口。
-- 每条隧道有四种状态：已停止、正在连接、运行中、连接失败。点「运行中」要等 SSH 真正开始监听才算，不是发出命令就算。
-- 点列表里的端口号，用浏览器打开 `localhost` 上的这个端口。
-- 选中一条隧道，它的 ssh 输出显示在列表下面，可以复制，也可以导出成 JSON。
-- 关掉窗口后隧道继续运行，程序留在 Dock 和菜单栏。菜单栏图标旁边是正在运行的条数，点开可以开关每条隧道，或重新打开窗口。
-- 退出程序时，这次启动的 SSH 子进程会一起停掉。程序不会在下次打开时按旧进程号去结束别的程序。
+TailTunnel 调用系统自带的 OpenSSH，不自行实现 SSH 协议。
 
-SSH 端口不出现在列表里，只在编辑隧道时填写。备注可以不填；填了之后，窗口和菜单栏里显示备注，不填则显示用户和主机。
+## 目录
+
+- [特性](#特性)
+- [工作原理](#工作原理)
+- [界面](#界面)
+- [安装](#安装)
+- [快速开始](#快速开始)
+- [配置](#配置)
+- [项目结构](#项目结构)
+- [参与贡献](#参与贡献)
+- [许可证与致谢](#许可证与致谢)
+
+## 特性
+
+- **多条隧道，独立控制**：每条隧道对应一次 `ssh -L`，可单独启动或停止；一条隧道可包含多个本地端口转发。
+- **可靠的状态判断**：隧道有「已停止」「正在连接」「运行中」「连接失败」四种状态。只有在 SSH 实际开始监听端口后才会显示为「运行中」，而不是在命令发出时。
+- **日志面板**：选中隧道后，在列表下方查看其 `ssh` 输出，支持复制和导出为 JSON。
+- **快速访问**：点击列表中的本地端口，即用浏览器打开对应的 `localhost` 地址。
+- **后台运行与菜单栏**：关闭窗口后隧道继续运行，应用保留在 Dock 和菜单栏中。菜单栏图标旁显示运行中的隧道数，可直接启停隧道或重新打开窗口。
+- **Tailscale 视图**：列出 Tailscale 网络中的设备及其地址，并标明在线设备是直连还是经由 DERP 中继。
+- **进程清理**：退出应用时，本次启动的 SSH 子进程会一并终止；下次启动不会依据旧的进程号去结束其他进程。
+
+## 工作原理
+
+一条隧道由一个远程主机和若干本地转发组成，对应一次 `ssh -L` 调用：同一次 SSH 连接上可以同时承载多条本地端口转发。
+
+<p align="center">
+  <img src="./assets/readme/layout.svg" width="100%" alt="隧道模型：同一次 SSH 连接上，本地 5432 映射到远程主机的 127.0.0.1:5432，本地 6379 映射到远程网络中的 10.0.3.4:6379。">
+</p>
+
+SSH 端口仅在编辑隧道时填写，不显示在列表中。备注为可选项：填写后，窗口和菜单栏显示备注，否则显示「用户@主机」。
 
 ## 界面
 
-左侧有三页。
+应用包含三个页面：
 
-- **隧道**是隧道列表和终端。
-- **Tailscale** 列出内网里的机器和内网地址，地址可以复制。在线的机器会标出是直连还是经过 DERP 中继，这台电脑标成「本机」。这台 Mac 上如果没有 Tailscale，这一页只说明没有安装，不提供安装。
-- **设置**里是配置文件的路径，可以换成别的 JSON 文件。
+| 页面 | 说明 |
+| --- | --- |
+| **隧道** | 隧道列表与终端面板，用于创建、启停隧道并查看输出。 |
+| **Tailscale** | 列出 Tailscale 网络中的设备和地址（可复制）。在线设备标明连接方式（直连或 DERP 中继），当前设备标记为「本机」。未安装 Tailscale 时，该页仅提示未检测到，不提供安装。 |
+| **设置** | 显示配置文件路径，可切换到其他 JSON 文件。 |
 
-## 从源码构建
+## 安装
 
-需要本机已安装 Node、Rust 和 OpenSSH，目前只在 macOS 上开发和运行。
+目前仅在 macOS 上开发和测试，尚未提供预编译安装包，需从源码构建。
+
+**前置依赖**
+
+- [Node.js](https://nodejs.org/) 与 npm
+- [Rust](https://www.rust-lang.org/tools/install) 工具链
+- OpenSSH（macOS 自带）
+- [Tauri 2 的系统依赖](https://tauri.app/start/prerequisites/)
+
+**获取源码并运行**
 
 ```bash
 git clone https://github.com/colojayce/TailTunnel.git
@@ -38,30 +74,56 @@ npm install
 npm run tauri dev
 ```
 
-打开后先新建一条隧道，填主机、SSH 端口、用户、密码和本地转发，保存后再点启动。
-
-打包：
+**构建发布版本**
 
 ```bash
 npm run tauri build
 ```
 
+## 快速开始
+
+1. 启动应用，在「隧道」页点击「新建」。
+2. 填写主机、SSH 端口、用户、密码，并添加一个或多个本地转发（本地端口、远程主机、远程端口）。
+3. 保存后点击「启动」。状态变为「运行中」后，即可通过 `localhost:<本地端口>` 访问远程服务。
+4. 选中隧道，在底部终端面板中查看 `ssh` 输出。
+
 ## 配置
 
-配置和密码写在本机的一个 JSON 文件里，默认是：
+隧道配置（包括 SSH 密码）以明文保存在本机的一个 JSON 文件中，默认路径为：
 
 ```text
 ~/Library/Application Support/com.tailtunnel.app/tunnels.json
 ```
 
-这个文件包含 SSH 密码，请不要提交到仓库，也不要分享。设置页里可以换成别的路径。
+> [!WARNING]
+> 该文件包含 SSH 密码。请勿将其提交到版本库或与他人共享。
 
-## 技术栈
+配置文件路径可在「设置」页中更改。
 
-界面是 Tauri 2 应用：Rust 负责 SSH 子进程、配置文件和 Tailscale 状态，前端是 TypeScript 和 Vite。隧道用的是系统里的 OpenSSH，不是自己实现的 SSH。
+## 项目结构
 
-## 许可证
+TailTunnel 是一个 [Tauri 2](https://tauri.app/) 应用：Rust 后端负责 SSH 子进程、配置文件和 Tailscale 状态，前端使用 TypeScript 和 Vite。
 
-[MIT](./LICENSE)
+```text
+.
+├── src/                 # 前端界面（TypeScript、CSS、图标字体）
+├── src-tauri/
+│   └── src/
+│       ├── lib.rs       # Tauri 命令与应用入口
+│       ├── manager.rs   # SSH 子进程的启停与状态管理
+│       ├── model.rs     # 数据模型、配置读写与 ssh 参数生成
+│       └── tailscale.rs # 读取 Tailscale 状态
+├── assets/              # README 使用的图片
+└── public/              # 静态资源
+```
 
-界面图标来自 [Remix Icon](https://remixicon.com)，字体文件随仓库放在 `src/fonts/`，适用 [Remix Icon License v1.0](./src/fonts/Remix-Icon-License.txt)。
+## 参与贡献
+
+欢迎通过 [Issues](https://github.com/colojayce/TailTunnel/issues) 反馈问题或提出建议，也欢迎提交 Pull Request。提交前请确保 `npm run build` 能够通过。
+
+## 许可证与致谢
+
+本项目基于 [MIT 许可证](./LICENSE) 发布。
+
+- 界面图标来自 [Remix Icon](https://remixicon.com)，字体文件随仓库放在 `src/fonts/`，适用 [Remix Icon License v1.0](./src/fonts/Remix-Icon-License.txt)。
+- 界面字体使用 [IBM Plex](https://github.com/IBM/plex)（通过 [Fontsource](https://fontsource.org/) 引入）。
