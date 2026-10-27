@@ -1,7 +1,7 @@
-/* Remix Icon 字体，只留 woff2 和用到的图标。新增图标时在这里补一行，编码见 node_modules/remixicon/fonts/remixicon.css。 */
+/* Remix Icon 字体已随仓库放在 src/fonts，不依赖 npm 安装。新增图标时在这里补一行，码位查 https://remixicon.com 的图标详情页，或 remixicon 4.9.1 包里的 fonts/remixicon.css。 */
 @font-face {
   font-family: "remixicon";
-  src: url("../node_modules/remixicon/fonts/remixicon.woff2") format("woff2");
+  src: url("./fonts/remixicon.woff2") format("woff2");
   font-display: block;
 }
 

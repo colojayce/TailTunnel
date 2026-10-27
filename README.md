@@ -63,3 +63,5 @@ npm run tauri build
 ## 许可证
 
 [MIT](./LICENSE)
+
+界面图标来自 [Remix Icon](https://remixicon.com)，字体文件随仓库放在 `src/fonts/`，适用 [Remix Icon License v1.0](./src/fonts/Remix-Icon-License.txt)。
