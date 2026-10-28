@@ -8,7 +8,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { emptyArt, type EmptyScene } from "./empty";
-import { MAX_LOG_CHARS, statusLabel, type Forward, type LogLine, type LogPage, type Snapshot, type Tunnel, type TunnelStatus } from "./types";
+import { MAX_LOG_CHARS, latencyLines, statusLabel, type Forward, type LatencyReport, type LogLine, type LogPage, type Snapshot, type Tunnel, type TunnelStatus } from "./types";
 
 const summary = document.querySelector<HTMLElement>("#summary")!;
 const list = document.querySelector<HTMLElement>("#list")!;
@@ -30,6 +30,12 @@ const hostInput = document.querySelector<HTMLInputElement>("#host")!;
 const portInput = document.querySelector<HTMLInputElement>("#ssh-port")!;
 const userInput = document.querySelector<HTMLInputElement>("#user")!;
 const passwordInput = document.querySelector<HTMLInputElement>("#password")!;
+const useJump = document.querySelector<HTMLInputElement>("#use-jump")!;
+const jumpFields = document.querySelector<HTMLElement>("#jump-fields")!;
+const jumpHostInput = document.querySelector<HTMLInputElement>("#jump-host")!;
+const jumpPortInput = document.querySelector<HTMLInputElement>("#jump-port")!;
+const jumpUserInput = document.querySelector<HTMLInputElement>("#jump-user")!;
+const jumpPasswordInput = document.querySelector<HTMLInputElement>("#jump-password")!;
 
 let snapshot: Snapshot = { tunnels: [], selectedId: null, configPath: "" };
 let editingId: string | null = null;
@@ -108,6 +114,13 @@ function render() {
       sub.textContent = `${tunnel.user}@${tunnel.host}`;
       main.append(sub);
     }
+    if (tunnel.jump) {
+      const via = document.createElement("span");
+      via.className = "via";
+      via.title = `经跳板 ${tunnel.jump.user}@${tunnel.jump.host}`;
+      via.append(icon("route-line"), document.createTextNode(`经 ${tunnel.jump.host}`));
+      main.append(via);
+    }
     const peer = peerOf(tunnel.host);
     if (peer) {
       const badge = document.createElement("span");
@@ -139,7 +152,19 @@ function render() {
     edit.setAttribute("aria-label", "编辑");
     edit.append(icon("pencil-line"));
     edit.addEventListener("click", () => openEditor(tunnel));
-    actions.append(action, edit);
+    const probing = latencyState.get(tunnel.id) === "pending";
+    const measure = document.createElement("button");
+    measure.type = "button";
+    measure.className = "icon";
+    measure.title = tunnel.jump ? "测速：比较直连和经跳板的延迟" : "测速";
+    measure.setAttribute("aria-label", "测速");
+    measure.disabled = probing;
+    measure.append(icon(probing ? "loader-4-line" : "timer-line"));
+    if (probing) measure.firstElementChild?.classList.add("spin");
+    measure.addEventListener("click", () => {
+      void measureLatency(tunnel);
+    });
+    actions.append(action, measure, edit);
 
     row.append(tile, main, detail, status, actions);
     if (tunnel.message) {
@@ -148,8 +173,37 @@ function render() {
       message.append(icon("error-warning-line"), document.createTextNode(tunnel.message));
       row.append(message);
     }
+    const latency = latencyState.get(tunnel.id);
+    if (latency) {
+      const line = document.createElement("span");
+      if (latency === "pending") {
+        line.className = "latency";
+        line.append(icon("timer-line"), document.createTextNode("正在测速…"));
+      } else if (typeof latency === "string") {
+        line.className = "latency bad";
+        line.append(icon("error-warning-line"), document.createTextNode(latency));
+      } else {
+        line.className = "latency";
+        line.append(icon("timer-line"), document.createTextNode(latencyLines(latency, Boolean(tunnel.jump)).join(" · ")));
+      }
+      row.append(line);
+    }
     list.append(row);
   }
+}
+
+const latencyState = new Map<string, LatencyReport | "pending" | string>();
+
+async function measureLatency(tunnel: Tunnel) {
+  if (latencyState.get(tunnel.id) === "pending") return;
+  latencyState.set(tunnel.id, "pending");
+  render();
+  try {
+    latencyState.set(tunnel.id, await invoke<LatencyReport>("measure_latency", { id: tunnel.id }));
+  } catch (error) {
+    latencyState.set(tunnel.id, errorText(error));
+  }
+  render();
 }
 
 function icon(name: string): HTMLElement {
@@ -297,6 +351,12 @@ function openEditor(tunnel?: Tunnel) {
   passwordInput.value = tunnel?.password ?? "";
   passwordInput.type = "password";
   paintPasswordToggle(false);
+  useJump.checked = Boolean(tunnel?.jump);
+  jumpHostInput.value = tunnel?.jump?.host ?? "";
+  jumpPortInput.value = String(tunnel?.jump?.port ?? 22);
+  jumpUserInput.value = tunnel?.jump?.user ?? "";
+  jumpPasswordInput.value = tunnel?.jump?.password ?? "";
+  syncJumpFields();
   deleteButton.hidden = !tunnel;
   document.querySelector<HTMLButtonElement>("#copy-tunnel-edit")!.hidden = !tunnel;
   document.querySelector<HTMLButtonElement>("#export-tunnel-edit")!.hidden = !tunnel;
@@ -307,6 +367,25 @@ function openEditor(tunnel?: Tunnel) {
   for (const forward of forwards) addForwardRow(forward);
   editor.showModal();
   noteInput.focus();
+}
+
+function syncJumpFields() {
+  jumpFields.hidden = !useJump.checked;
+}
+
+useJump.addEventListener("change", () => {
+  syncJumpFields();
+  if (useJump.checked) jumpHostInput.focus();
+});
+
+function readJump() {
+  if (!useJump.checked) return null;
+  return {
+    host: jumpHostInput.value,
+    port: Number(jumpPortInput.value),
+    user: jumpUserInput.value,
+    password: jumpPasswordInput.value,
+  };
 }
 
 function syncDock() {
@@ -822,6 +901,7 @@ editorForm.addEventListener("submit", (event) => {
     port: Number(portInput.value),
     user: userInput.value,
     password: passwordInput.value,
+    jump: readJump(),
     forwards: readForwards(),
   };
   void invoke<Snapshot>("save_tunnel", { draft })

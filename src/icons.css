@@ -34,4 +34,5 @@
 .ri-settings-3-line::before { content: "\f0e6"; }
 .ri-stop-line::before { content: "\f1a1"; }
 .ri-terminal-box-line::before { content: "\f1f6"; }
+.ri-timer-line::before { content: "\f215"; }
 .ri-upload-2-line::before { content: "\f24a"; }

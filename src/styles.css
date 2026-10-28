@@ -518,6 +518,22 @@ button.port:hover i { color: var(--accent); }
 
 .message i { font-size: 14px; margin-top: 1px; }
 
+.latency {
+  grid-column: 2 / 5;
+  display: flex;
+  align-items: flex-start;
+  gap: 0.35rem;
+  margin-top: 0.15rem;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.latency i { font-size: 14px; margin-top: 1px; }
+.latency.bad { color: var(--bad); font-family: inherit; }
+i.spin { animation: spin 1s linear infinite; }
+
 /* 空状态 */
 
 .empty {
@@ -892,6 +908,32 @@ button.host-pick > i { color: var(--faint); }
 button.host-pick .identity { font-weight: 500; }
 button.host-pick .peer { margin-left: auto; }
 
+.jump-toggle {
+  flex-direction: row;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.85rem;
+  cursor: pointer;
+}
+
+.jump-toggle input { width: auto; margin: 0; accent-color: var(--accent); }
+
+.jump-fields { margin-top: 0.7rem; }
+
+.via {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  max-width: 12rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 500;
+}
+
 .forward-head {
   display: flex;
   align-items: center;
@@ -935,5 +977,5 @@ button.host-pick .peer { margin-left: auto; }
 
 @media (prefers-reduced-motion: reduce) {
   button, input, .row { transition: none; }
-  .status.connecting::before, .notice.pending i { animation: none; }
+  .status.connecting::before, .notice.pending i, i.spin { animation: none; }
 }

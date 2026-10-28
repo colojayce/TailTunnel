@@ -100,6 +100,28 @@
             </span>
           </label>
         </div>
+        <label class="jump-toggle">
+          <input id="use-jump" type="checkbox" />
+          <span>经跳板连接</span>
+        </label>
+        <div id="jump-fields" class="fields jump-fields" hidden>
+          <label>
+            跳板主机
+            <input id="jump-host" autocomplete="off" />
+          </label>
+          <label>
+            跳板端口
+            <input id="jump-port" type="number" min="1" max="65535" value="22" />
+          </label>
+          <label>
+            跳板用户
+            <input id="jump-user" autocomplete="off" />
+          </label>
+          <label>
+            跳板密码
+            <input id="jump-password" type="password" autocomplete="off" />
+          </label>
+        </div>
         <div class="forward-head">
           <span>本地转发</span>
           <button id="add-forward" class="ghost" type="button"><i class="ri-add-line" aria-hidden="true"></i><span>加一行</span></button>

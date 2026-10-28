@@ -1,6 +1,6 @@
 use crate::model::{
     LogEntry, LogPage, MAX_LOG_CHARS, Snapshot, Tunnel, TunnelDraft, TunnelStatus, TunnelView,
-    config_file, display_command, load_store_at, save_store_at, set_private, ssh_args,
+    config_file, display_command, jump_prompt, load_store_at, save_store_at, set_private, ssh_args,
     tunnel_export, validate_draft,
 };
 use std::collections::HashMap;
@@ -37,6 +37,8 @@ pub struct StartPlan {
     pub args: Vec<String>,
     pub command: String,
     pub pw_file: PathBuf,
+    pub jump_pw_file: Option<PathBuf>,
+    pub jump_prompt: Option<String>,
     pub askpass: PathBuf,
     pub stop_requested: Arc<AtomicBool>,
 }
@@ -211,6 +213,18 @@ impl TunnelManager {
         let pw_file = self.app_dir.join(format!("pw-{id}"));
         fs::write(&pw_file, &tunnel.password).map_err(|e| format!("无法暂存密码：{e}"))?;
         set_private(&pw_file);
+        let (jump_pw_file, jump_prompt) = match &tunnel.jump {
+            Some(jump) => {
+                let path = jump_sibling(&pw_file);
+                fs::write(&path, &jump.password).map_err(|e| {
+                    let _ = fs::remove_file(&pw_file);
+                    format!("无法暂存密码：{e}")
+                })?;
+                set_private(&path);
+                (Some(path), Some(jump_prompt(jump)))
+            }
+            None => (None, None),
+        };
         let askpass = askpass_path(&self.app_dir);
         write_askpass(&self.app_dir)?;
         let args = ssh_args(&tunnel, &self.app_dir.join("known_hosts"));
@@ -231,9 +245,21 @@ impl TunnelManager {
             args,
             command,
             pw_file,
+            jump_pw_file,
+            jump_prompt,
             askpass,
             stop_requested,
         })
+    }
+
+    pub fn probe_plan(&self, id: &str) -> Result<(Tunnel, PathBuf), String> {
+        let tunnel = self
+            .tunnels
+            .iter()
+            .find(|tunnel| tunnel.id == id)
+            .cloned()
+            .ok_or("这条隧道已经不在列表里。")?;
+        Ok((tunnel, self.app_dir.clone()))
     }
 
     pub fn attach(&mut self, id: &str, running: Running) {
@@ -250,6 +276,7 @@ impl TunnelManager {
 
     pub fn fail_start(&mut self, id: &str, pw_file: &Path, message: String) -> Option<u64> {
         let _ = fs::remove_file(pw_file);
+        let _ = fs::remove_file(jump_sibling(pw_file));
         let live = self.live.get_mut(id)?;
         live.status = TunnelStatus::Failed;
         live.message = Some(message.clone());
@@ -280,7 +307,9 @@ impl TunnelManager {
     }
 
     pub fn mark_exit(&mut self, id: &str, intentional: bool, code: Option<i32>) -> bool {
-        let _ = fs::remove_file(self.app_dir.join(format!("pw-{id}")));
+        let pw_file = self.app_dir.join(format!("pw-{id}"));
+        let _ = fs::remove_file(jump_sibling(&pw_file));
+        let _ = fs::remove_file(pw_file);
         let Some(live) = self.live.get_mut(id) else {
             return false;
         };
@@ -396,6 +425,7 @@ impl TunnelManager {
             port: tunnel.port,
             user: tunnel.user.clone(),
             password: tunnel.password.clone(),
+            jump: tunnel.jump.clone(),
             forwards: tunnel.forwards.clone(),
             status: live
                 .map(|item| item.status)
@@ -624,14 +654,28 @@ fn next_id() -> String {
     format!("{millis:x}{n:x}")
 }
 
+/// ssh asks for each hop's password separately and names the account in the
+/// prompt ("user@host's password: "), so the jump hop is recognised by that text.
+pub const ASKPASS_SCRIPT: &str = r#"#!/bin/sh
+if [ -n "$TAILTUNNEL_JUMP_PROMPT" ] && [ "${1#"$TAILTUNNEL_JUMP_PROMPT"}" != "$1" ]; then
+  exec /bin/cat "$TAILTUNNEL_JUMP_PW_FILE"
+fi
+exec /bin/cat "$TAILTUNNEL_PW_FILE"
+"#;
+
+pub fn jump_sibling(pw_file: &Path) -> PathBuf {
+    let mut name = pw_file.file_name().unwrap_or_default().to_os_string();
+    name.push("-jump");
+    pw_file.with_file_name(name)
+}
+
 pub fn askpass_path(dir: &Path) -> PathBuf {
     dir.join("askpass.sh")
 }
 
 pub fn write_askpass(dir: &Path) -> Result<(), String> {
     let path = askpass_path(dir);
-    let script = "#!/bin/sh\n/bin/cat \"$TAILTUNNEL_PW_FILE\"\n";
-    fs::write(&path, script).map_err(|e| format!("无法写入密码助手：{e}"))?;
+    fs::write(&path, ASKPASS_SCRIPT).map_err(|e| format!("无法写入密码助手：{e}"))?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -670,6 +714,7 @@ mod tests {
             port: 22,
             user: "root".into(),
             password: "s3cret".into(),
+            jump: None,
             forwards: vec![ForwardDraft {
                 local_port: 8080,
                 remote_host: "127.0.0.1".into(),
@@ -1084,5 +1129,59 @@ pub fn signal_pid(pid: u32, sig: i32) {
     #[cfg(not(unix))]
     {
         let _ = (pid, sig);
+    }
+}
+
+#[cfg(test)]
+mod askpass_tests {
+    use super::*;
+    use std::process::Command;
+
+    fn answer(dir: &Path, prompt: &str, with_jump: bool) -> String {
+        let script = dir.join("askpass.sh");
+        fs::write(&script, ASKPASS_SCRIPT).unwrap();
+        let mut command = Command::new("/bin/sh");
+        command
+            .arg(&script)
+            .arg(prompt)
+            .env("TAILTUNNEL_PW_FILE", dir.join("pw-a"));
+        if with_jump {
+            command
+                .env("TAILTUNNEL_JUMP_PROMPT", "hop@jump.example.com's password")
+                .env("TAILTUNNEL_JUMP_PW_FILE", dir.join("pw-a-jump"));
+        }
+        String::from_utf8(command.output().unwrap().stdout).unwrap()
+    }
+
+    #[test]
+    fn askpass_picks_the_password_for_the_hop_being_asked() {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("tailtunnel-askpass-{nanos}"));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("pw-a"), "target-pass").unwrap();
+        fs::write(dir.join("pw-a-jump"), "jump-pass").unwrap();
+        assert_eq!(
+            answer(&dir, "hop@jump.example.com's password: ", true),
+            "jump-pass"
+        );
+        assert_eq!(
+            answer(&dir, "root@10.0.0.5's password: ", true),
+            "target-pass"
+        );
+        assert_eq!(answer(&dir, "root@10.0.0.5's password: ", false), "target-pass");
+        // Without a jump configured, an empty prefix must not match everything.
+        assert_eq!(answer(&dir, "anything", false), "target-pass");
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn jump_password_file_sits_next_to_the_target_one() {
+        assert_eq!(
+            jump_sibling(Path::new("/x/pw-abc")),
+            PathBuf::from("/x/pw-abc-jump")
+        );
     }
 }

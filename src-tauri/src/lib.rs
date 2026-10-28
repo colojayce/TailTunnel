@@ -1,3 +1,4 @@
+mod latency;
 mod manager;
 mod model;
 mod tailscale;
@@ -144,6 +145,11 @@ fn start_tunnel(app: AppHandle, id: String) -> Result<Snapshot, String> {
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    if let (Some(prompt), Some(file)) = (&plan.jump_prompt, &plan.jump_pw_file) {
+        command
+            .env("TAILTUNNEL_JUMP_PROMPT", prompt)
+            .env("TAILTUNNEL_JUMP_PW_FILE", file);
+    }
     match command.spawn() {
         Ok(mut child) => {
             let pid = child.id();
@@ -205,6 +211,42 @@ fn start_tunnel(app: AppHandle, id: String) -> Result<Snapshot, String> {
             Err(message)
         }
     }
+}
+
+#[tauri::command(async)]
+fn measure_latency(state: State<AppState>, id: String) -> Result<latency::LatencyReport, String> {
+    let (tunnel, app_dir) = lock(&state).probe_plan(&id)?;
+    manager::write_askpass(&app_dir)?;
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let jump_pw_file = app_dir.join(format!("pw-probe-{nanos}"));
+    // Unix socket paths are limited to ~104 bytes, so keep this short; the
+    // per-user temp dir keeps other local users away from the socket.
+    let socket = std::env::temp_dir().join(format!(
+        "tt-{}-{}.sock",
+        std::process::id(),
+        nanos % 1_000_000
+    ));
+    let result = (|| {
+        std::fs::write(&jump_pw_file, tunnel.jump.as_ref().map_or("", |j| &j.password))
+            .map_err(|e| format!("无法暂存密码：{e}"))?;
+        model::set_private(&jump_pw_file);
+        latency::measure(
+            &tunnel,
+            &latency::ProbeEnv {
+                askpass: &manager::askpass_path(&app_dir),
+                jump_pw_file: &jump_pw_file,
+                known_hosts: &app_dir.join("known_hosts"),
+                socket: &socket,
+            },
+            latency::SAMPLES,
+        )
+    })();
+    let _ = std::fs::remove_file(&jump_pw_file);
+    let _ = std::fs::remove_file(&socket);
+    result
 }
 
 #[tauri::command]
@@ -567,7 +609,8 @@ pub fn run() {
             export_tunnel,
             open_local,
             start_tunnel,
-            stop_tunnel
+            stop_tunnel,
+            measure_latency
         ])
         .build(tauri::generate_context!())
         .expect("启动 TailTunnel 失败")
