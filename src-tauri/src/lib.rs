@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Emitter, Manager, RunEvent, State, WindowEvent};
+use tauri_plugin_notification::NotificationExt;
 
 const TRAY_ID: &str = "main";
 
@@ -128,12 +129,55 @@ fn open_local(port: u16) -> Result<(), String> {
     }
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn start_tunnel(app: AppHandle, id: String) -> Result<Snapshot, String> {
+    launch(&app, &id, None)
+}
+
+/// Starts ssh for a tunnel. `retry` is the token of a scheduled reconnect;
+/// without it this is a start the user asked for.
+fn launch(app: &AppHandle, id: &str, retry: Option<u64>) -> Result<Snapshot, String> {
     let state = app.state::<AppState>();
-    let plan = {
+    if let Some(token) = retry {
+        if !lock(&state).retry_pending(id, token) {
+            return Err(manager::RETRY_CANCELLED.into());
+        }
+    }
+    if let Some(message) = busy_ports_message(app, id) {
+        let refused = lock(&state).refuse_start(id, &message, retry);
+        if let Some((seq, notice)) = refused {
+            emit_log(app, id, seq, &message);
+            let snapshot = lock(&state).snapshot();
+            publish(app, &snapshot);
+            if let Some(notice) = notice {
+                notify(app, notice);
+            }
+        }
+        return Err(message);
+    }
+    let prepared = {
         let mut manager = lock(&state);
-        manager.prepare_start(&id)?
+        match retry {
+            Some(token) => manager.prepare_retry(id, token),
+            None => manager.prepare_start(id),
+        }
+    };
+    let plan = match prepared {
+        Ok(plan) => plan,
+        Err(message) => {
+            if retry.is_some() && message != manager::RETRY_CANCELLED {
+                let refused = lock(&state).refuse_start(id, &message, retry);
+                if let Some((seq, notice)) = refused {
+                    emit_log(app, id, seq, &message);
+                    let snapshot = lock(&state).snapshot();
+                    publish(app, &snapshot);
+                    if let Some(notice) = notice {
+                        notify(app, notice);
+                    }
+                }
+            }
+            return Err(message);
+        }
     };
     let mut command = Command::new("ssh");
     command
@@ -155,8 +199,12 @@ fn start_tunnel(app: AppHandle, id: String) -> Result<Snapshot, String> {
             let pid = child.id();
             let stdout = child.stdout.take();
             let stderr = child.stderr.take();
-            let update = {
+            let (banner, update) = {
                 let mut manager = lock(&state);
+                let banner = plan
+                    .banner
+                    .as_deref()
+                    .and_then(|line| manager.push_log(&plan.id, line));
                 let update = manager.push_log(&plan.id, &plan.command);
                 manager.attach(
                     &plan.id,
@@ -166,10 +214,13 @@ fn start_tunnel(app: AppHandle, id: String) -> Result<Snapshot, String> {
                         pw_file: plan.pw_file.clone(),
                     },
                 );
-                update
+                (banner, update)
             };
+            if let (Some(update), Some(line)) = (banner, plan.banner.as_deref()) {
+                emit_log(app, &plan.id, update.seq, line);
+            }
             if let Some(update) = update {
-                emit_log(&app, &plan.id, update.seq, &plan.command);
+                emit_log(app, &plan.id, update.seq, &plan.command);
             }
             let stdout_task =
                 stdout.map(|stream| pump_output(app.clone(), plan.id.clone(), stream));
@@ -256,7 +307,127 @@ fn stop_tunnel(app: AppHandle, id: String) -> Result<Snapshot, String> {
     if let Some(pid) = pid {
         signal_pid(pid, libc::SIGTERM);
     }
-    Ok(lock(&state).snapshot())
+    let snapshot = lock(&state).snapshot();
+    // A stop that only cancels a scheduled reconnect changes state right here.
+    publish(&app, &snapshot);
+    Ok(snapshot)
+}
+
+#[tauri::command]
+fn set_notify(app: AppHandle, state: State<AppState>, on: bool) -> Result<Snapshot, String> {
+    let snapshot = {
+        let mut manager = lock(&state);
+        manager.set_notify(on)?;
+        manager.snapshot()
+    };
+    publish(&app, &snapshot);
+    Ok(snapshot)
+}
+
+#[derive(Clone, serde::Serialize)]
+struct PortNote {
+    port: u16,
+    message: String,
+}
+
+/// Looks for trouble on local ports before a tunnel is saved: other tunnels
+/// that forward the same port, and programs already listening on it.
+#[tauri::command(async)]
+fn check_ports(state: State<AppState>, id: Option<String>, ports: Vec<u16>) -> Vec<PortNote> {
+    let mut ports: Vec<u16> = ports.into_iter().filter(|port| *port != 0).collect();
+    ports.sort_unstable();
+    ports.dedup();
+    let (own_pids, neighbors) = {
+        let manager = lock(&state);
+        let neighbors: Vec<(u16, Vec<String>)> = ports
+            .iter()
+            .map(|port| (*port, manager.port_neighbors(id.as_deref(), *port, false)))
+            .collect();
+        (manager.tunnel_pids(), neighbors)
+    };
+    let mut notes = Vec::new();
+    for (port, sentences) in neighbors {
+        let mut message = sentences.concat();
+        let others: Vec<Listener> = listeners_on(port)
+            .into_iter()
+            .filter(|listener| !own_pids.contains(&listener.pid))
+            .collect();
+        if let Some(sentence) = conflict_sentence(port, &others) {
+            message.push_str(&sentence);
+        }
+        if !message.is_empty() {
+            notes.push(PortNote { port, message });
+        }
+    }
+    notes
+}
+
+/// What stops a tunnel from binding its local ports right now, if anything.
+fn busy_ports_message(app: &AppHandle, id: &str) -> Option<String> {
+    let state = app.state::<AppState>();
+    let (ports, own_pids, neighbors) = {
+        let manager = lock(&state);
+        let ports = manager.local_ports(id);
+        let neighbors: Vec<String> = ports
+            .iter()
+            .flat_map(|port| manager.port_neighbors(Some(id), *port, true))
+            .collect();
+        (ports, manager.tunnel_pids(), neighbors)
+    };
+    if !neighbors.is_empty() {
+        return Some(neighbors.concat());
+    }
+    let mut parts = Vec::new();
+    for port in ports {
+        let others: Vec<Listener> = listeners_on(port)
+            .into_iter()
+            .filter(|listener| !own_pids.contains(&listener.pid))
+            .collect();
+        if let Some(sentence) = conflict_sentence(port, &others) {
+            parts.push(sentence);
+        }
+    }
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.concat())
+    }
+}
+
+/// Shows a system notification unless the window is already in front.
+fn notify(app: &AppHandle, notice: manager::Notice) {
+    let in_front = app.get_webview_window("main").is_some_and(|window| {
+        window.is_visible().unwrap_or(false) && window.is_focused().unwrap_or(false)
+    });
+    if in_front {
+        return;
+    }
+    let _ = app
+        .notification()
+        .builder()
+        .title(notice.title)
+        .body(notice.body)
+        .show();
+}
+
+/// Waits out the back-off, then reconnects unless the user cancelled.
+fn schedule_retry(app: AppHandle, id: String, token: u64, delay_secs: u64) {
+    thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(delay_secs);
+        while Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(250));
+            let pending = app
+                .state::<AppState>()
+                .0
+                .lock()
+                .expect("隧道状态锁已损坏")
+                .retry_pending(&id, token);
+            if !pending {
+                return;
+            }
+        }
+        let _ = launch(&app, &id, Some(token));
+    });
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -287,18 +458,32 @@ fn finish_tunnel(app: &AppHandle, id: &str, intentional: bool, code: Option<i32>
             .snapshot();
         publish(app, &snapshot);
     }
-    let Some(note) = describe_port_conflict(&ports) else {
-        return;
-    };
     let Some(token) = token else {
         return;
     };
-    let annotated = {
+    if let Some(note) = describe_port_conflict(&ports) {
+        let annotated = {
+            let state = app.state::<AppState>();
+            let mut manager = state.0.lock().expect("隧道状态锁已损坏");
+            manager.set_failure_message(id, note, token)
+        };
+        if annotated {
+            let snapshot = app
+                .state::<AppState>()
+                .0
+                .lock()
+                .expect("隧道状态锁已损坏")
+                .snapshot();
+            publish(app, &snapshot);
+        }
+    }
+    let outcome = {
         let state = app.state::<AppState>();
         let mut manager = state.0.lock().expect("隧道状态锁已损坏");
-        manager.set_failure_message(id, note, token)
+        manager.after_exit(id, token)
     };
-    if annotated {
+    if let Some(retry) = outcome.retry {
+        emit_log(app, id, retry.seq, &retry.line);
         let snapshot = app
             .state::<AppState>()
             .0
@@ -306,6 +491,10 @@ fn finish_tunnel(app: &AppHandle, id: &str, intentional: bool, code: Option<i32>
             .expect("隧道状态锁已损坏")
             .snapshot();
         publish(app, &snapshot);
+        schedule_retry(app.clone(), id.to_string(), retry.token, retry.delay_secs);
+    }
+    if let Some(notice) = outcome.notice {
+        notify(app, notice);
     }
 }
 
@@ -410,6 +599,9 @@ where
                 continue;
             };
             emit_log(&app, &id, update.seq, &line);
+            if let Some(notice) = update.notice {
+                notify(&app, notice);
+            }
             if update.established {
                 let snapshot = app
                     .state::<AppState>()
@@ -452,6 +644,7 @@ pub(crate) fn tray_text(
     let status = match status {
         TunnelStatus::Connecting => "正在连接",
         TunnelStatus::Running => "运行中",
+        TunnelStatus::Waiting => "等待重连",
         TunnelStatus::Failed => "连接失败",
         TunnelStatus::Stopped => "已停止",
     };
@@ -544,14 +737,16 @@ fn handle_tray_menu(app: &AppHandle, event: tauri::menu::MenuEvent) {
             let manager = state.0.lock().expect("隧道状态锁已损坏");
             manager.snapshot().tunnels.into_iter().any(|tunnel| {
                 tunnel.id == tunnel_id
-                    && (tunnel.status == TunnelStatus::Running
-                        || tunnel.status == TunnelStatus::Connecting)
+                    && matches!(
+                        tunnel.status,
+                        TunnelStatus::Running | TunnelStatus::Connecting | TunnelStatus::Waiting
+                    )
             })
         };
         if busy {
             let _ = stop_tunnel(app, tunnel_id);
         } else {
-            let _ = start_tunnel(app, tunnel_id);
+            let _ = launch(&app, &tunnel_id, None);
         }
     });
 }
@@ -583,6 +778,7 @@ fn install_tray(app: &tauri::App) -> tauri::Result<()> {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_notification::init())
         .setup(|app| {
             let dir = app.path().app_data_dir()?;
             app.manage(AppState(Mutex::new(TunnelManager::load(dir)?)));
@@ -610,7 +806,9 @@ pub fn run() {
             open_local,
             start_tunnel,
             stop_tunnel,
-            measure_latency
+            measure_latency,
+            set_notify,
+            check_ports
         ])
         .build(tauri::generate_context!())
         .expect("启动 TailTunnel 失败")

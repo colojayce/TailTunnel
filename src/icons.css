@@ -24,8 +24,10 @@
 .ri-file-settings-line::before { content: "\ed07"; }
 .ri-folder-open-line::before { content: "\ed70"; }
 .ri-global-line::before { content: "\edcf"; }
+.ri-key-2-line::before { content: "\ee6f"; }
 .ri-loader-4-line::before { content: "\eec6"; }
 .ri-macbook-line::before { content: "\eee8"; }
+.ri-notification-3-line::before { content: "\ef94"; }
 .ri-pencil-line::before { content: "\efe0"; }
 .ri-play-line::before { content: "\f00b"; }
 .ri-refresh-line::before { content: "\f064"; }

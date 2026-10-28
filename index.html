@@ -57,13 +57,21 @@
         </div>
         <button id="pick-config" type="button"><i class="ri-folder-open-line" aria-hidden="true"></i><span>更改</span></button>
       </div>
+      <label class="card setting-row switch-line">
+        <span class="tile"><i class="ri-notification-3-line" aria-hidden="true"></i></span>
+        <span class="setting-text">
+          <span>系统通知</span>
+          <p class="setting-help">隧道断开、重连成功或最终失败时提醒；窗口在前台时不打扰。</p>
+        </span>
+        <input id="notify-toggle" type="checkbox" />
+      </label>
       <p id="settings-error" class="form-error" hidden></p>
     </section>
     </div>
     </div>
 
     <dialog id="editor" class="sheet">
-      <form id="editor-form" method="dialog">
+      <form id="editor-form" method="dialog" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
         <header class="sheet-head">
           <span class="tile"><i class="ri-route-line" aria-hidden="true"></i></span>
           <h2 id="editor-title">新建隧道</h2>
@@ -74,12 +82,12 @@
         <div class="fields">
           <label class="wide">
             备注
-            <input id="note" name="note" maxlength="40" autocomplete="off" placeholder="不填则显示主机" />
+            <input id="note" name="note" maxlength="40" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" placeholder="不填则显示主机" />
           </label>
           <label>
             主机
             <span class="host-line">
-              <input id="host" name="host" autocomplete="off" required />
+              <input id="host" name="host" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" required />
               <button id="pick-host" type="button"><i class="ri-global-line" aria-hidden="true"></i><span>选择</span></button>
             </span>
           </label>
@@ -88,15 +96,29 @@
             <input id="ssh-port" name="port" type="number" min="1" max="65535" value="22" required />
           </label>
           <div id="host-picks" class="host-picks" hidden></div>
+          <div class="auth-line">
+            <span>登录方式</span>
+            <span class="seg" role="group" aria-label="登录方式">
+              <button id="auth-password" class="seg-item current" type="button" aria-pressed="true">密码</button>
+              <button id="auth-key" class="seg-item" type="button" aria-pressed="false">私钥</button>
+            </span>
+          </div>
           <label>
             用户
-            <input id="user" name="user" autocomplete="off" required />
+            <input id="user" name="user" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" required />
           </label>
           <label>
-            密码
+            <span id="password-label">密码</span>
             <span class="password-line">
-              <input id="password" name="password" type="password" autocomplete="off" />
+              <input id="password" name="password" type="password" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" />
               <button id="toggle-password" class="icon" type="button" aria-label="显示密码"><i class="ri-eye-line" aria-hidden="true"></i></button>
+            </span>
+          </label>
+          <label id="key-field" class="wide" hidden>
+            私钥文件
+            <span class="host-line">
+              <input id="key-file" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" placeholder="~/.ssh/id_ed25519" />
+              <button id="pick-key" type="button"><i class="ri-key-2-line" aria-hidden="true"></i><span>选择</span></button>
             </span>
           </label>
         </div>
@@ -107,21 +129,39 @@
         <div id="jump-fields" class="fields jump-fields" hidden>
           <label>
             跳板主机
-            <input id="jump-host" autocomplete="off" />
+            <input id="jump-host" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" />
           </label>
           <label>
             跳板端口
             <input id="jump-port" type="number" min="1" max="65535" value="22" />
           </label>
+          <div class="auth-line">
+            <span>跳板登录方式</span>
+            <span class="seg" role="group" aria-label="跳板登录方式">
+              <button id="jump-auth-password" class="seg-item current" type="button" aria-pressed="true">密码</button>
+              <button id="jump-auth-key" class="seg-item" type="button" aria-pressed="false">私钥</button>
+            </span>
+          </div>
           <label>
             跳板用户
-            <input id="jump-user" autocomplete="off" />
+            <input id="jump-user" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" />
           </label>
           <label>
-            跳板密码
-            <input id="jump-password" type="password" autocomplete="off" />
+            <span id="jump-password-label">跳板密码</span>
+            <input id="jump-password" type="password" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" />
+          </label>
+          <label id="jump-key-field" class="wide" hidden>
+            跳板私钥文件
+            <span class="host-line">
+              <input id="jump-key-file" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" placeholder="~/.ssh/id_ed25519" />
+              <button id="jump-pick-key" type="button"><i class="ri-key-2-line" aria-hidden="true"></i><span>选择</span></button>
+            </span>
           </label>
         </div>
+        <label class="jump-toggle">
+          <input id="auto-reconnect" type="checkbox" />
+          <span>断开后自动重连</span>
+        </label>
         <div class="forward-head">
           <span>本地转发</span>
           <button id="add-forward" class="ghost" type="button"><i class="ri-add-line" aria-hidden="true"></i><span>加一行</span></button>

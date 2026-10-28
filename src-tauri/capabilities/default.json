@@ -3,5 +3,5 @@
   "identifier": "default",
   "description": "主窗口可以调用本应用的命令和文件选择",
   "windows": ["main"],
-  "permissions": ["core:default", "dialog:default"]
+  "permissions": ["core:default", "dialog:default", "notification:default"]
 }

@@ -6,9 +6,10 @@ import "@fontsource/ibm-plex-mono/500.css";
 import "./icons.css";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { homeDir } from "@tauri-apps/api/path";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { emptyArt, type EmptyScene } from "./empty";
-import { MAX_LOG_CHARS, latencyLines, statusLabel, type Forward, type LatencyReport, type LogLine, type LogPage, type Snapshot, type Tunnel, type TunnelStatus } from "./types";
+import { MAX_LOG_CHARS, latencyLines, statusLabel, type AuthMethod, type Forward, type LatencyReport, type LogLine, type LogPage, type PortNote, type Snapshot, type Tunnel, type TunnelStatus } from "./types";
 
 const summary = document.querySelector<HTMLElement>("#summary")!;
 const list = document.querySelector<HTMLElement>("#list")!;
@@ -36,8 +37,10 @@ const jumpHostInput = document.querySelector<HTMLInputElement>("#jump-host")!;
 const jumpPortInput = document.querySelector<HTMLInputElement>("#jump-port")!;
 const jumpUserInput = document.querySelector<HTMLInputElement>("#jump-user")!;
 const jumpPasswordInput = document.querySelector<HTMLInputElement>("#jump-password")!;
+const autoReconnect = document.querySelector<HTMLInputElement>("#auto-reconnect")!;
+const notifyToggle = document.querySelector<HTMLInputElement>("#notify-toggle")!;
 
-let snapshot: Snapshot = { tunnels: [], selectedId: null, configPath: "" };
+let snapshot: Snapshot = { tunnels: [], selectedId: null, configPath: "", notify: true };
 let editingId: string | null = null;
 let seenArrival = false;
 let shownStatus = "";
@@ -60,23 +63,32 @@ function connectingCount(): number {
   return snapshot.tunnels.filter((tunnel) => tunnel.status === "connecting").length;
 }
 
+function waitingCount(): number {
+  return snapshot.tunnels.filter((tunnel) => tunnel.status === "waiting").length;
+}
+
+/** Running, connecting, or waiting to reconnect: "stop" is the useful action. */
 function busy(status: TunnelStatus): boolean {
-  return status === "running" || status === "connecting";
+  return status === "running" || status === "connecting" || status === "waiting";
 }
 
 function render() {
   const count = snapshot.tunnels.length;
   const running = runningCount();
   const connecting = connectingCount();
+  const waiting = waitingCount();
   summary.textContent = count === 0
     ? "没有隧道"
     : running > 0
       ? `${running} 条在跑`
       : connecting > 0
         ? "正在连接"
-        : "没有在跑的隧道";
+        : waiting > 0
+          ? "等待重连"
+          : "没有在跑的隧道";
   summary.className = running > 0 || connecting > 0 ? "info live" : "info";
   settingsPath.textContent = snapshot.configPath;
+  notifyToggle.checked = snapshot.notify;
   syncDock();
 
   list.classList.toggle("arrive", !seenArrival);
@@ -279,9 +291,15 @@ function blankForward(): Forward {
 }
 
 function addForwardRow(forward: Forward = blankForward()) {
+  const item = document.createElement("div");
+  item.className = "forward-item";
+  const hint = document.createElement("p");
+  hint.className = "port-hint";
+  hint.hidden = true;
   const row = document.createElement("div");
   row.className = "forward-row";
   const local = field("本地端口", String(forward.localPort || ""), "number");
+  local.addEventListener("input", schedulePortCheck);
   const remoteHost = field("远端地址", forward.remoteHost, "text");
   const remote = field("远端端口", String(forward.remotePort || ""), "number");
   const arrow = icon("arrow-right-line");
@@ -292,13 +310,58 @@ function addForwardRow(forward: Forward = blankForward()) {
   remove.append(icon("close-line"));
   remove.setAttribute("aria-label", "去掉这一行");
   remove.addEventListener("click", () => {
-    if (forwardsEl.children.length === 1) return;
-    row.remove();
+    if (forwardsEl.querySelectorAll(".forward-row").length === 1) return;
+    item.remove();
     syncRemoveButtons();
+    schedulePortCheck();
   });
   row.append(local, arrow, remoteHost, remote, remove);
-  forwardsEl.append(row);
+  item.append(row, hint);
+  forwardsEl.append(item);
   syncRemoveButtons();
+}
+
+let portCheckTimer = 0;
+let portCheckRequest = 0;
+
+function schedulePortCheck() {
+  window.clearTimeout(portCheckTimer);
+  portCheckTimer = window.setTimeout(() => {
+    void checkPorts();
+  }, 350);
+}
+
+function setHint(item: Element, message: string) {
+  const hint = item.querySelector<HTMLElement>(".port-hint")!;
+  hint.hidden = message === "";
+  if (message) hint.replaceChildren(icon("error-warning-line"), document.createTextNode(message));
+  else hint.replaceChildren();
+}
+
+/** Warns about repeated local ports, other tunnels on the same port, and programs already listening. */
+async function checkPorts() {
+  const request = ++portCheckRequest;
+  const items = [...forwardsEl.querySelectorAll<HTMLElement>(".forward-item")];
+  const ports = items.map((item) => Number(item.querySelector("input")!.value));
+  const seen = new Set<number>();
+  const repeated = ports.map((port) => {
+    if (!Number.isInteger(port) || port < 1 || port > 65535) return false;
+    const again = seen.has(port);
+    seen.add(port);
+    return again;
+  });
+  let notes: PortNote[] = [];
+  try {
+    notes = await invoke<PortNote[]>("check_ports", { id: editingId, ports: [...seen] });
+  } catch {
+    notes = [];
+  }
+  if (request !== portCheckRequest) return;
+  const byPort = new Map(notes.map((note) => [note.port, note.message]));
+  items.forEach((item, index) => {
+    if (repeated[index]) setHint(item, "这个端口上面已经填过了，同一条隧道里不能重复。");
+    else setHint(item, byPort.get(ports[index]) ?? "");
+  });
 }
 
 function syncRemoveButtons() {
@@ -318,6 +381,9 @@ function field(placeholder: string, value: string, type: string): HTMLInputEleme
     input.inputMode = "numeric";
   }
   input.autocomplete = "off";
+  input.autocapitalize = "off";
+  input.spellcheck = false;
+  input.setAttribute("autocorrect", "off");
   input.setAttribute("aria-label", placeholder);
   return input;
 }
@@ -351,11 +417,16 @@ function openEditor(tunnel?: Tunnel) {
   passwordInput.value = tunnel?.password ?? "";
   passwordInput.type = "password";
   paintPasswordToggle(false);
+  mainAuth.keyInput.value = tunnel?.keyFile ?? "";
+  mainAuth.set(tunnel?.auth ?? "password");
+  autoReconnect.checked = tunnel?.autoReconnect ?? false;
   useJump.checked = Boolean(tunnel?.jump);
   jumpHostInput.value = tunnel?.jump?.host ?? "";
   jumpPortInput.value = String(tunnel?.jump?.port ?? 22);
   jumpUserInput.value = tunnel?.jump?.user ?? "";
   jumpPasswordInput.value = tunnel?.jump?.password ?? "";
+  jumpAuth.keyInput.value = tunnel?.jump?.keyFile ?? "";
+  jumpAuth.set(tunnel?.jump?.auth ?? "password");
   syncJumpFields();
   deleteButton.hidden = !tunnel;
   document.querySelector<HTMLButtonElement>("#copy-tunnel-edit")!.hidden = !tunnel;
@@ -367,7 +438,70 @@ function openEditor(tunnel?: Tunnel) {
   for (const forward of forwards) addForwardRow(forward);
   editor.showModal();
   noteInput.focus();
+  void checkPorts();
 }
+
+type AuthControl = {
+  keyInput: HTMLInputElement;
+  method: () => AuthMethod;
+  set: (next: AuthMethod) => void;
+};
+
+/** Wires the 密码/私钥 switch of one login (the tunnel's, or the jump's when `prefix` is "jump-"). */
+function authControl(prefix: "" | "jump-", passwordText: string, passphraseText: string): AuthControl {
+  const byId = <T extends HTMLElement>(id: string) => document.querySelector<T>(`#${prefix}${id}`)!;
+  const passwordButton = byId<HTMLButtonElement>("auth-password");
+  const keyButton = byId<HTMLButtonElement>("auth-key");
+  const keyField = byId<HTMLElement>("key-field");
+  const keyInput = byId<HTMLInputElement>("key-file");
+  const secretLabel = byId<HTMLElement>("password-label");
+  const secretInput = byId<HTMLInputElement>("password");
+  let current: AuthMethod = "password";
+  const set = (next: AuthMethod) => {
+    current = next;
+    const key = next === "key";
+    passwordButton.classList.toggle("current", !key);
+    keyButton.classList.toggle("current", key);
+    passwordButton.setAttribute("aria-pressed", String(!key));
+    keyButton.setAttribute("aria-pressed", String(key));
+    keyField.hidden = !key;
+    secretLabel.textContent = key ? passphraseText : passwordText;
+    secretInput.placeholder = key ? "没有口令就留空" : "";
+  };
+  passwordButton.addEventListener("click", () => set("password"));
+  keyButton.addEventListener("click", () => {
+    set("key");
+    if (!keyInput.value.trim()) keyInput.focus();
+  });
+  byId<HTMLButtonElement>("pick-key").addEventListener("click", () => {
+    void pickKeyFile(keyInput);
+  });
+  return { keyInput, method: () => current, set };
+}
+
+async function pickKeyFile(target: HTMLInputElement) {
+  let start: string | undefined;
+  const typed = target.value.trim();
+  if (typed.startsWith("/")) {
+    start = typed;
+  } else {
+    try {
+      start = `${(await homeDir()).replace(/\/$/, "")}/.ssh`;
+    } catch {
+      start = undefined;
+    }
+  }
+  try {
+    const picked = await open({ title: "选择私钥文件", multiple: false, directory: false, defaultPath: start });
+    if (typeof picked === "string") target.value = picked;
+  } catch (error) {
+    formError.hidden = false;
+    formError.textContent = errorText(error);
+  }
+}
+
+const mainAuth = authControl("", "密码", "私钥口令");
+const jumpAuth = authControl("jump-", "跳板密码", "跳板口令");
 
 function syncJumpFields() {
   jumpFields.hidden = !useJump.checked;
@@ -385,6 +519,8 @@ function readJump() {
     port: Number(jumpPortInput.value),
     user: jumpUserInput.value,
     password: jumpPasswordInput.value,
+    auth: jumpAuth.method(),
+    keyFile: jumpAuth.keyInput.value,
   };
 }
 
@@ -613,6 +749,21 @@ document.querySelector<HTMLButtonElement>("#pick-config")!.addEventListener("cli
     settingsError.hidden = false;
     settingsError.textContent = errorText(error);
   });
+});
+
+notifyToggle.addEventListener("change", () => {
+  const on = notifyToggle.checked;
+  settingsError.hidden = true;
+  void invoke<Snapshot>("set_notify", { on })
+    .then((next) => {
+      snapshot = next;
+      render();
+    })
+    .catch((error: unknown) => {
+      notifyToggle.checked = snapshot.notify;
+      settingsError.hidden = false;
+      settingsError.textContent = errorText(error);
+    });
 });
 
 document.querySelector<HTMLButtonElement>("#create")!.addEventListener("click", () => openEditor());
@@ -901,8 +1052,11 @@ editorForm.addEventListener("submit", (event) => {
     port: Number(portInput.value),
     user: userInput.value,
     password: passwordInput.value,
+    auth: mainAuth.method(),
+    keyFile: mainAuth.keyInput.value,
     jump: readJump(),
     forwards: readForwards(),
+    autoReconnect: autoReconnect.checked,
   };
   void invoke<Snapshot>("save_tunnel", { draft })
     .then((next) => {

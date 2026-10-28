@@ -25,23 +25,63 @@ struct Live {
     connected_at: Option<u64>,
     running: Option<Running>,
     starting: bool,
+    /// First log line of the current connection attempt.
+    attempt_floor: u64,
+    /// Whether the attempt that just ended had been connected.
+    was_connected: bool,
+    /// Token of the scheduled reconnect; clearing it cancels the reconnect.
+    retry: Option<u64>,
+    /// Reconnects since the connection was last stable, for the back-off.
+    attempts: u32,
+    /// Inside a run of reconnects that has already been announced.
+    series: bool,
+}
+
+/// A system notification to show, if the window is not in front.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Notice {
+    pub title: String,
+    pub body: String,
 }
 
 pub struct LogUpdate {
     pub seq: u64,
     pub established: bool,
+    pub notice: Option<Notice>,
+}
+
+pub struct RetryPlan {
+    pub delay_secs: u64,
+    pub token: u64,
+    pub seq: u64,
+    pub line: String,
+}
+
+#[derive(Default)]
+pub struct AfterExit {
+    pub retry: Option<RetryPlan>,
+    pub notice: Option<Notice>,
 }
 
 pub struct StartPlan {
     pub id: String,
     pub args: Vec<String>,
     pub command: String,
+    /// Log line announcing a reconnect, written before the command.
+    pub banner: Option<String>,
     pub pw_file: PathBuf,
     pub jump_pw_file: Option<PathBuf>,
     pub jump_prompt: Option<String>,
     pub askpass: PathBuf,
     pub stop_requested: Arc<AtomicBool>,
 }
+
+/// Seconds to wait before each reconnect; the last value repeats.
+pub const RETRY_DELAYS: [u64; 5] = [2, 5, 10, 30, 60];
+/// A connection that stayed up this long starts the back-off over.
+const STABLE_MS: u64 = 60_000;
+/// Error from `prepare_retry` when the reconnect was cancelled meanwhile.
+pub const RETRY_CANCELLED: &str = "重连已取消。";
 
 pub struct TunnelManager {
     app_dir: PathBuf,
@@ -50,13 +90,20 @@ pub struct TunnelManager {
     live: HashMap<String, Live>,
     selected: Option<String>,
     shutting_down: bool,
+    notify: bool,
+    retry_counter: u64,
 }
 
 impl TunnelManager {
     pub fn load(dir: PathBuf) -> Result<Self, String> {
         fs::create_dir_all(&dir).map_err(|e| format!("创建配置目录失败：{e}"))?;
         clear_password_files(&dir);
-        let tunnel_file = remembered_tunnel_file(&dir);
+        let settings = read_settings(&dir);
+        let tunnel_file = if settings.tunnel_file.is_empty() {
+            config_file(&dir)
+        } else {
+            PathBuf::from(&settings.tunnel_file)
+        };
         let tunnels = load_store_at(&tunnel_file)?;
         let mut live = HashMap::new();
         for tunnel in &tunnels {
@@ -70,6 +117,8 @@ impl TunnelManager {
             live,
             selected: None,
             shutting_down: false,
+            notify: settings.notify,
+            retry_counter: 0,
         })
     }
 
@@ -86,7 +135,20 @@ impl TunnelManager {
                 .collect(),
             selected_id: self.selected.clone(),
             config_path: self.tunnel_file.display().to_string(),
+            notify: self.notify,
         }
+    }
+
+    pub fn set_notify(&mut self, on: bool) -> Result<(), String> {
+        write_settings(
+            &self.app_dir,
+            &AppSettings {
+                tunnel_file: self.tunnel_file.display().to_string(),
+                notify: on,
+            },
+        )?;
+        self.notify = on;
+        Ok(())
     }
 
     pub fn log_of(&self, id: &str) -> LogPage {
@@ -170,7 +232,13 @@ impl TunnelManager {
         } else {
             save_store_at(&path, &self.tunnels)?;
         }
-        remember_tunnel_file(&self.app_dir, &path)?;
+        write_settings(
+            &self.app_dir,
+            &AppSettings {
+                tunnel_file: path.display().to_string(),
+                notify: self.notify,
+            },
+        )?;
         self.tunnel_file = path;
         Ok(())
     }
@@ -190,6 +258,24 @@ impl TunnelManager {
     }
 
     pub fn prepare_start(&mut self, id: &str) -> Result<StartPlan, String> {
+        self.prepare(id, None)
+    }
+
+    /// Starts the reconnect scheduled under `token`, unless it was cancelled.
+    pub fn prepare_retry(&mut self, id: &str, token: u64) -> Result<StartPlan, String> {
+        self.prepare(id, Some(token))
+    }
+
+    pub fn retry_pending(&self, id: &str, token: u64) -> bool {
+        !self.shutting_down && self.live.get(id).and_then(|live| live.retry) == Some(token)
+    }
+
+    fn prepare(&mut self, id: &str, retry: Option<u64>) -> Result<StartPlan, String> {
+        if let Some(token) = retry {
+            if !self.retry_pending(id, token) {
+                return Err(RETRY_CANCELLED.into());
+            }
+        }
         if self.live.get(id).is_some_and(|live| live.starting) {
             return Err("这条隧道正在连接。".into());
         }
@@ -230,9 +316,19 @@ impl TunnelManager {
         let args = ssh_args(&tunnel, &self.app_dir.join("known_hosts"));
         let command = display_command(&args);
         let stop_requested = Arc::new(AtomicBool::new(false));
+        let mut banner = None;
         if let Some(live) = self.live.get_mut(id) {
-            live.lines.clear();
-            live.floor = live.next_seq;
+            if retry.is_some() {
+                // Keep the log of the drop so the reconnects read as one story.
+                banner = Some(format!("第 {} 次重连", live.attempts));
+            } else {
+                live.lines.clear();
+                live.floor = live.next_seq;
+                live.attempts = 0;
+                live.series = false;
+            }
+            live.retry = None;
+            live.attempt_floor = live.next_seq;
             live.message = None;
             live.last_line = None;
             live.connected_at = None;
@@ -244,6 +340,7 @@ impl TunnelManager {
             id: id.to_string(),
             args,
             command,
+            banner,
             pw_file,
             jump_pw_file,
             jump_prompt,
@@ -283,6 +380,8 @@ impl TunnelManager {
         live.connected_at = None;
         live.running = None;
         live.starting = false;
+        live.retry = None;
+        live.series = false;
         Some(append_line(live, &message))
     }
 
@@ -297,13 +396,27 @@ impl TunnelManager {
             }
         }
         let mut established = false;
+        let mut notice = None;
         if live.status == TunnelStatus::Connecting && session_ready(line) {
             live.status = TunnelStatus::Running;
             live.connected_at = Some(now_ms());
             live.message = None;
             established = true;
+            if live.series {
+                live.series = false;
+                if self.notify {
+                    notice = self.tunnels.iter().find(|tunnel| tunnel.id == id).map(|tunnel| Notice {
+                        title: tunnel.display_name(),
+                        body: "已重新连上。".into(),
+                    });
+                }
+            }
         }
-        Some(LogUpdate { seq, established })
+        Some(LogUpdate {
+            seq,
+            established,
+            notice,
+        })
     }
 
     pub fn mark_exit(&mut self, id: &str, intentional: bool, code: Option<i32>) -> bool {
@@ -313,6 +426,13 @@ impl TunnelManager {
         let Some(live) = self.live.get_mut(id) else {
             return false;
         };
+        live.was_connected = live.connected_at.is_some();
+        if live
+            .connected_at
+            .is_some_and(|at| now_ms().saturating_sub(at) >= STABLE_MS)
+        {
+            live.attempts = 0;
+        }
         live.running = None;
         live.connected_at = None;
         live.starting = false;
@@ -320,6 +440,9 @@ impl TunnelManager {
             live.status = TunnelStatus::Stopped;
             live.message = None;
             live.last_line = None;
+            live.retry = None;
+            live.attempts = 0;
+            live.series = false;
             append_line(live, "已停止");
         } else {
             let fallback = match code {
@@ -398,14 +521,173 @@ impl TunnelManager {
         true
     }
 
+    /// Decides what follows an unexpected exit: a scheduled reconnect when the
+    /// tunnel asks for one and the failure is worth retrying, and whether to
+    /// tell the user. `token` is `log_token` taken right after `mark_exit`.
+    pub fn after_exit(&mut self, id: &str, token: u64) -> AfterExit {
+        let mut outcome = AfterExit::default();
+        if self.shutting_down {
+            return outcome;
+        }
+        let Some(tunnel) = self.tunnels.iter().find(|tunnel| tunnel.id == id) else {
+            return outcome;
+        };
+        let name = tunnel.display_name();
+        let auto = tunnel.auto_reconnect;
+        let retry_token = self.retry_counter + 1;
+        let Some(live) = self.live.get_mut(id) else {
+            return outcome;
+        };
+        if live.status != TunnelStatus::Failed || live.next_seq != token || live.running.is_some()
+        {
+            return outcome;
+        }
+        let reason = live.message.clone().unwrap_or_default();
+        let body = if auto && !attempt_hit_fatal(live) {
+            self.retry_counter = retry_token;
+            live.attempts = live.attempts.saturating_add(1);
+            let delay_secs = RETRY_DELAYS[(live.attempts as usize - 1).min(RETRY_DELAYS.len() - 1)];
+            let line = format!("{delay_secs} 秒后第 {} 次重连", live.attempts);
+            live.status = TunnelStatus::Waiting;
+            live.retry = Some(retry_token);
+            live.message = Some(if reason.is_empty() {
+                line.clone()
+            } else {
+                format!("{line} · {reason}")
+            });
+            let seq = append_line(live, &line);
+            outcome.retry = Some(RetryPlan {
+                delay_secs,
+                token: retry_token,
+                seq,
+                line,
+            });
+            if live.series {
+                None
+            } else {
+                live.series = true;
+                Some(if live.was_connected {
+                    format!("连接断开，正在自动重连。{reason}")
+                } else {
+                    format!("没有连上，正在自动重连。{reason}")
+                })
+            }
+        } else if live.series {
+            live.series = false;
+            Some(format!("自动重连失败：{reason}"))
+        } else if live.was_connected {
+            Some(format!("连接断开：{reason}"))
+        } else {
+            Some(format!("连接失败：{reason}"))
+        };
+        if self.notify {
+            outcome.notice = body.map(|body| Notice { title: name, body });
+        }
+        outcome
+    }
+
+    /// Marks a start that was refused before ssh ran (a busy port). For a
+    /// reconnect, does nothing once the reconnect has been cancelled.
+    pub fn refuse_start(
+        &mut self,
+        id: &str,
+        message: &str,
+        retry: Option<u64>,
+    ) -> Option<(u64, Option<Notice>)> {
+        if let Some(token) = retry {
+            if !self.retry_pending(id, token) {
+                return None;
+            }
+        }
+        let name = self
+            .tunnels
+            .iter()
+            .find(|tunnel| tunnel.id == id)?
+            .display_name();
+        let live = self.live.get_mut(id)?;
+        if live.running.is_some() || live.starting {
+            return None;
+        }
+        let body = if live.series {
+            format!("自动重连失败：{message}")
+        } else {
+            format!("没有启动：{message}")
+        };
+        live.status = TunnelStatus::Failed;
+        live.message = Some(message.to_string());
+        live.connected_at = None;
+        live.retry = None;
+        live.series = false;
+        let seq = append_line(live, message);
+        let notice = self.notify.then(|| Notice { title: name, body });
+        Some((seq, notice))
+    }
+
+    /// Local ports this tunnel forwards, without repeats.
+    pub fn local_ports(&self, id: &str) -> Vec<u16> {
+        let mut ports: Vec<u16> = self
+            .tunnels
+            .iter()
+            .find(|tunnel| tunnel.id == id)
+            .map(|tunnel| tunnel.forwards.iter().map(|f| f.local_port).collect())
+            .unwrap_or_default();
+        ports.sort_unstable();
+        ports.dedup();
+        ports
+    }
+
+    /// Process ids of every ssh this app is running.
+    pub fn tunnel_pids(&self) -> Vec<u32> {
+        self.live
+            .values()
+            .filter_map(|live| live.running.as_ref().map(|running| running.pid))
+            .collect()
+    }
+
+    /// Sentences about other tunnels that forward `port`. With `busy_only`,
+    /// only tunnels that hold the port right now count.
+    pub fn port_neighbors(&self, id: Option<&str>, port: u16, busy_only: bool) -> Vec<String> {
+        self.tunnels
+            .iter()
+            .filter(|tunnel| Some(tunnel.id.as_str()) != id)
+            .filter(|tunnel| tunnel.forwards.iter().any(|f| f.local_port == port))
+            .filter_map(|tunnel| {
+                let busy = self
+                    .live
+                    .get(&tunnel.id)
+                    .is_some_and(|live| live.running.is_some() || live.starting);
+                if busy {
+                    Some(format!("端口 {port} 正被隧道「{}」使用。", tunnel.display_name()))
+                } else if busy_only {
+                    None
+                } else {
+                    Some(format!(
+                        "端口 {port} 也用在隧道「{}」里，两条不能同时运行。",
+                        tunnel.display_name()
+                    ))
+                }
+            })
+            .collect()
+    }
+
+    /// Stops a running tunnel (returning the pid to signal), or cancels a
+    /// scheduled reconnect.
     pub fn request_stop(&mut self, id: &str) -> Option<u32> {
         let live = self.live.get_mut(id)?;
         if let Some(running) = &live.running {
             running.stop_requested.store(true, Ordering::SeqCst);
-            Some(running.pid)
-        } else {
-            None
+            return Some(running.pid);
         }
+        if live.retry.is_some() || live.status == TunnelStatus::Waiting {
+            live.retry = None;
+            live.attempts = 0;
+            live.series = false;
+            live.status = TunnelStatus::Stopped;
+            live.message = None;
+            live.last_line = None;
+            append_line(live, "已停止");
+        }
+        None
     }
 
     pub fn stop_all(&mut self) -> Vec<u32> {
@@ -425,8 +707,11 @@ impl TunnelManager {
             port: tunnel.port,
             user: tunnel.user.clone(),
             password: tunnel.password.clone(),
+            auth: tunnel.auth,
+            key_file: tunnel.key_file.clone(),
             jump: tunnel.jump.clone(),
             forwards: tunnel.forwards.clone(),
+            auto_reconnect: tunnel.auto_reconnect,
             status: live
                 .map(|item| item.status)
                 .unwrap_or(TunnelStatus::Stopped),
@@ -461,8 +746,41 @@ impl Live {
             connected_at: None,
             running: None,
             starting: false,
+            attempt_floor: 0,
+            was_connected: false,
+            retry: None,
+            attempts: 0,
+            series: false,
         }
     }
+}
+
+/// Failures that another try cannot fix: wrong credentials, a changed host
+/// key, a bad key file or a local port that is taken.
+fn is_fatal_line(line: &str) -> bool {
+    if is_noise_line(line) {
+        return false;
+    }
+    let lower = line.to_ascii_lowercase();
+    [
+        "permission denied",
+        "host key verification failed",
+        "remote host identification has changed",
+        "address already in use",
+        "unprotected private key",
+        "load key",
+        "not accessible",
+        "incorrect passphrase",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
+}
+
+fn attempt_hit_fatal(live: &Live) -> bool {
+    live.lines
+        .iter()
+        .filter(|entry| entry.seq >= live.attempt_floor)
+        .any(|entry| is_fatal_line(&entry.line))
 }
 
 pub fn session_ready(line: &str) -> bool {
@@ -610,34 +928,32 @@ fn trim_message(line: &str) -> String {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct AppSettings {
+    #[serde(default)]
     tunnel_file: String,
+    #[serde(default = "notify_by_default")]
+    notify: bool,
+}
+
+fn notify_by_default() -> bool {
+    true
 }
 
 fn settings_file(dir: &Path) -> PathBuf {
     dir.join("settings.json")
 }
 
-fn remembered_tunnel_file(dir: &Path) -> PathBuf {
-    let fallback = config_file(dir);
-    let Ok(text) = fs::read_to_string(settings_file(dir)) else {
-        return fallback;
-    };
-    let Ok(settings) = serde_json::from_str::<AppSettings>(&text) else {
-        return fallback;
-    };
-    let path = PathBuf::from(settings.tunnel_file);
-    if path.as_os_str().is_empty() {
-        fallback
-    } else {
-        path
-    }
+fn read_settings(dir: &Path) -> AppSettings {
+    fs::read_to_string(settings_file(dir))
+        .ok()
+        .and_then(|text| serde_json::from_str::<AppSettings>(&text).ok())
+        .unwrap_or(AppSettings {
+            tunnel_file: String::new(),
+            notify: true,
+        })
 }
 
-fn remember_tunnel_file(dir: &Path, path: &Path) -> Result<(), String> {
-    let text = serde_json::to_string_pretty(&AppSettings {
-        tunnel_file: path.display().to_string(),
-    })
-    .map_err(|e| format!("写入设置失败：{e}"))?;
+fn write_settings(dir: &Path, settings: &AppSettings) -> Result<(), String> {
+    let text = serde_json::to_string_pretty(settings).map_err(|e| format!("写入设置失败：{e}"))?;
     let file = settings_file(dir);
     fs::write(&file, text).map_err(|e| format!("写入设置失败：{e}"))?;
     set_private(&file);
@@ -714,13 +1030,242 @@ mod tests {
             port: 22,
             user: "root".into(),
             password: "s3cret".into(),
+            auth: Default::default(),
+            key_file: String::new(),
             jump: None,
             forwards: vec![ForwardDraft {
                 local_port: 8080,
                 remote_host: "127.0.0.1".into(),
                 remote_port: 80,
             }],
+            auto_reconnect: false,
         }
+    }
+
+    fn reconnecting() -> TunnelDraft {
+        let mut item = draft();
+        item.note = "NAS".into();
+        item.auto_reconnect = true;
+        item
+    }
+
+    /// Runs a tunnel until it is connected, then lets it drop with `line`.
+    fn drop_with(manager: &mut TunnelManager, id: &str, line: &str, connect: bool) -> AfterExit {
+        let plan = match manager.live.get(id).and_then(|live| live.retry) {
+            Some(token) => manager.prepare_retry(id, token).unwrap(),
+            None => manager.prepare_start(id).unwrap(),
+        };
+        manager.attach(
+            id,
+            Running {
+                pid: 424_242,
+                stop_requested: plan.stop_requested,
+                pw_file: plan.pw_file,
+            },
+        );
+        if connect {
+            manager
+                .push_log(id, "debug1: Local forwarding listening on 127.0.0.1 port 8080.")
+                .unwrap();
+        }
+        manager.push_log(id, line).unwrap();
+        assert!(manager.mark_exit(id, false, Some(255)));
+        let token = manager.log_token(id).unwrap();
+        manager.after_exit(id, token)
+    }
+
+    #[test]
+    fn a_drop_schedules_reconnects_with_growing_delays() {
+        let (dir, mut manager) = loaded();
+        let id = manager.upsert(reconnecting()).unwrap();
+        let first = drop_with(&mut manager, &id, "Connection reset by peer", true);
+        let retry = first.retry.expect("重连");
+        assert_eq!(retry.delay_secs, 2);
+        assert_eq!(retry.line, "2 秒后第 1 次重连");
+        assert_eq!(
+            first.notice,
+            Some(Notice {
+                title: "NAS".into(),
+                body: "连接断开，正在自动重连。Connection reset by peer".into(),
+            })
+        );
+        let view = manager.snapshot().tunnels.into_iter().next().unwrap();
+        assert_eq!(view.status, TunnelStatus::Waiting);
+        assert_eq!(
+            view.message.as_deref(),
+            Some("2 秒后第 1 次重连 · Connection reset by peer")
+        );
+
+        // Further failures back off and stay quiet.
+        let second = drop_with(&mut manager, &id, "Connection timed out", false);
+        assert_eq!(second.retry.unwrap().delay_secs, 5);
+        assert!(second.notice.is_none());
+        // The log of the first drop is kept across reconnects.
+        assert!(manager
+            .log_of(&id)
+            .lines
+            .iter()
+            .any(|entry| entry.line == "Connection reset by peer"));
+        assert!(manager.log_of(&id).lines.iter().any(|entry| entry.line == "5 秒后第 2 次重连"));
+
+        // Coming back up is announced once.
+        let token = manager.live[&id].retry.unwrap();
+        let plan = manager.prepare_retry(&id, token).unwrap();
+        assert_eq!(plan.banner.as_deref(), Some("第 2 次重连"));
+        manager.attach(
+            &id,
+            Running {
+                pid: 1,
+                stop_requested: plan.stop_requested,
+                pw_file: plan.pw_file,
+            },
+        );
+        let up = manager
+            .push_log(&id, "debug1: Local forwarding listening on 127.0.0.1 port 8080.")
+            .unwrap();
+        assert_eq!(up.notice.map(|notice| notice.body).as_deref(), Some("已重新连上。"));
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn delays_stop_growing_at_the_last_step() {
+        let (dir, mut manager) = loaded();
+        let id = manager.upsert(reconnecting()).unwrap();
+        let mut delays = Vec::new();
+        for _ in 0..7 {
+            delays.push(drop_with(&mut manager, &id, "Connection refused", false).retry.unwrap().delay_secs);
+        }
+        assert_eq!(delays, vec![2, 5, 10, 30, 60, 60, 60]);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn wrong_password_or_busy_port_is_not_retried() {
+        let (dir, mut manager) = loaded();
+        let id = manager.upsert(reconnecting()).unwrap();
+        let denied = drop_with(
+            &mut manager,
+            &id,
+            "root@100.64.1.2: Permission denied (publickey,password).",
+            false,
+        );
+        assert!(denied.retry.is_none());
+        assert_eq!(
+            denied.notice.unwrap().body,
+            "连接失败：root@100.64.1.2: Permission denied (publickey,password)."
+        );
+        assert_eq!(manager.snapshot().tunnels[0].status, TunnelStatus::Failed);
+
+        let busy = drop_with(&mut manager, &id, "bind [127.0.0.1]:8080: Address already in use", false);
+        assert!(busy.retry.is_none());
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_fatal_line_from_an_earlier_attempt_does_not_block_retries() {
+        let (dir, mut manager) = loaded();
+        let id = manager.upsert(reconnecting()).unwrap();
+        // A debug line mentioning a denial is noise, not a verdict.
+        let first = drop_with(&mut manager, &id, "debug1: Permission denied hint", true);
+        assert!(first.retry.is_some());
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn without_auto_reconnect_a_drop_only_notifies() {
+        let (dir, mut manager) = loaded();
+        let id = manager.upsert(draft()).unwrap();
+        let outcome = drop_with(&mut manager, &id, "Connection reset by peer", true);
+        assert!(outcome.retry.is_none());
+        assert_eq!(
+            outcome.notice,
+            Some(Notice {
+                title: "root@100.64.1.2".into(),
+                body: "连接断开：Connection reset by peer".into(),
+            })
+        );
+        manager.set_notify(false).unwrap();
+        let quiet = drop_with(&mut manager, &id, "Connection reset by peer", true);
+        assert!(quiet.notice.is_none());
+        let reloaded = TunnelManager::load(dir.clone()).unwrap();
+        assert!(!reloaded.snapshot().notify);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn stopping_a_waiting_tunnel_cancels_the_reconnect() {
+        let (dir, mut manager) = loaded();
+        let id = manager.upsert(reconnecting()).unwrap();
+        let retry = drop_with(&mut manager, &id, "Connection reset by peer", true)
+            .retry
+            .unwrap();
+        assert_eq!(manager.request_stop(&id), None);
+        assert_eq!(manager.snapshot().tunnels[0].status, TunnelStatus::Stopped);
+        assert!(!manager.retry_pending(&id, retry.token));
+        assert_eq!(
+            manager.prepare_retry(&id, retry.token).err().as_deref(),
+            Some(RETRY_CANCELLED)
+        );
+        assert!(manager.refuse_start(&id, "端口被占", Some(retry.token)).is_none());
+        assert_eq!(manager.snapshot().tunnels[0].status, TunnelStatus::Stopped);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_manual_start_replaces_a_scheduled_reconnect() {
+        let (dir, mut manager) = loaded();
+        let id = manager.upsert(reconnecting()).unwrap();
+        let retry = drop_with(&mut manager, &id, "Connection reset by peer", true)
+            .retry
+            .unwrap();
+        manager.prepare_start(&id).unwrap();
+        assert!(!manager.retry_pending(&id, retry.token));
+        assert!(manager.log_of(&id).lines.is_empty());
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_refused_reconnect_ends_the_series_with_a_notice() {
+        let (dir, mut manager) = loaded();
+        let id = manager.upsert(reconnecting()).unwrap();
+        let retry = drop_with(&mut manager, &id, "Connection reset by peer", true)
+            .retry
+            .unwrap();
+        let (_, notice) = manager
+            .refuse_start(&id, "端口 8080 已被 node（pid 9）占用。", Some(retry.token))
+            .unwrap();
+        assert_eq!(
+            notice.unwrap().body,
+            "自动重连失败：端口 8080 已被 node（pid 9）占用。"
+        );
+        let view = manager.snapshot().tunnels.into_iter().next().unwrap();
+        assert_eq!(view.status, TunnelStatus::Failed);
+        assert!(!manager.retry_pending(&id, retry.token));
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn other_tunnels_on_the_same_port_are_named() {
+        let (dir, mut manager) = loaded();
+        let a = manager.upsert(reconnecting()).unwrap();
+        let mut other = draft();
+        other.note = "备用".into();
+        let b = manager.upsert(other).unwrap();
+        assert_eq!(
+            manager.port_neighbors(Some(&a), 8080, false),
+            vec!["端口 8080 也用在隧道「备用」里，两条不能同时运行。".to_string()]
+        );
+        assert!(manager.port_neighbors(Some(&a), 8080, true).is_empty());
+        assert!(manager.port_neighbors(Some(&a), 9090, false).is_empty());
+        running(&mut manager, &b);
+        assert_eq!(
+            manager.port_neighbors(Some(&a), 8080, true),
+            vec!["端口 8080 正被隧道「备用」使用。".to_string()]
+        );
+        assert_eq!(manager.port_neighbors(None, 8080, true).len(), 1);
+        assert_eq!(manager.tunnel_pids(), vec![424_242]);
+        assert_eq!(manager.local_ports(&a), vec![8080]);
+        let _ = fs::remove_dir_all(dir);
     }
 
     fn loaded() -> (PathBuf, TunnelManager) {

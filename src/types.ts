@@ -4,14 +4,18 @@ export type Forward = {
   remotePort: number;
 };
 
+export type AuthMethod = "password" | "key";
+
 export type JumpHost = {
   host: string;
   port: number;
   user: string;
   password: string;
+  auth: AuthMethod;
+  keyFile?: string;
 };
 
-export type TunnelStatus = "stopped" | "connecting" | "running" | "failed";
+export type TunnelStatus = "stopped" | "connecting" | "running" | "waiting" | "failed";
 
 export type Tunnel = {
   id: string;
@@ -20,8 +24,11 @@ export type Tunnel = {
   port: number;
   user: string;
   password: string;
+  auth: AuthMethod;
+  keyFile: string;
   jump: JumpHost | null;
   forwards: Forward[];
+  autoReconnect: boolean;
   status: TunnelStatus;
   message: string | null;
   connectedAt: number | null;
@@ -31,6 +38,12 @@ export type Snapshot = {
   tunnels: Tunnel[];
   selectedId: string | null;
   configPath: string;
+  notify: boolean;
+};
+
+export type PortNote = {
+  port: number;
+  message: string;
 };
 
 export type LogLine = {
@@ -49,6 +62,7 @@ export const MAX_LOG_CHARS = 80_000;
 export function statusLabel(status: TunnelStatus): string {
   if (status === "connecting") return "正在连接";
   if (status === "running") return "运行中";
+  if (status === "waiting") return "等待重连";
   if (status === "failed") return "连接失败";
   return "已停止";
 }
