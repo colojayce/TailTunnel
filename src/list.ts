@@ -572,6 +572,7 @@ function peerOf(host: string): TailscaleMachine | undefined {
   return machines.find((machine) => {
     if (machine.ipv4.length > 0 && machine.ipv4 === trimmed) return true;
     if (machine.hostName.toLowerCase() === key) return true;
+    if (machine.displayName.toLowerCase() === key) return true;
     return machine.dnsName.length > 0 && machine.dnsName.toLowerCase() === key;
   });
 }
@@ -773,6 +774,7 @@ type AppView = "tunnels" | "tailscale" | "settings";
 type TailscaleMachine = {
   hostName: string;
   dnsName: string;
+  displayName: string;
   ipv4: string;
   online: boolean;
   here: boolean;
@@ -819,7 +821,7 @@ function paintTailscale(report: TailscaleReport) {
     name.className = "machine-name";
     const host = document.createElement("span");
     host.className = "identity";
-    host.textContent = machine.hostName;
+    host.textContent = machine.displayName;
     name.append(host);
     if (machine.here) {
       const here = document.createElement("span");
@@ -918,7 +920,7 @@ function fillHostPicks() {
     button.className = "host-pick";
     const name = document.createElement("span");
     name.className = "identity";
-    name.textContent = machine.hostName;
+    name.textContent = machine.displayName;
     const ip = document.createElement("span");
     ip.className = "ip";
     ip.textContent = machine.ipv4;
@@ -950,7 +952,7 @@ async function refreshMachines(manual: boolean) {
     if (report.installed && !report.message) {
       machines = report.machines;
       const nextKey = machines
-        .map((machine) => `${machine.ipv4}\t${machine.online}\t${machine.hostName}\t${machine.dnsName}`)
+        .map((machine) => `${machine.ipv4}\t${machine.online}\t${machine.displayName}\t${machine.hostName}\t${machine.dnsName}`)
         .join("\n");
       if (tunnelsLoaded && nextKey !== peerKey) render();
       peerKey = nextKey;

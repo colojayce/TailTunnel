@@ -11,6 +11,7 @@ const STATUS_TIMEOUT: Duration = Duration::from_secs(5);
 pub struct TailscaleMachine {
     pub host_name: String,
     pub dns_name: String,
+    pub display_name: String,
     pub ipv4: String,
     pub online: bool,
     pub here: bool,
@@ -193,7 +194,13 @@ pub fn parse_status(text: &str) -> Result<TailscaleReport, String> {
             .here
             .cmp(&left.here)
             .then(right.online.cmp(&left.online))
-            .then(left.host_name.cmp(&right.host_name))
+            // 官网设备名大小写混用，按不区分大小写排，大小写只用来打破平局。
+            .then_with(|| {
+                left.display_name
+                    .to_lowercase()
+                    .cmp(&right.display_name.to_lowercase())
+            })
+            .then_with(|| left.display_name.cmp(&right.display_name))
     });
     let online_peers = machines
         .iter()
@@ -230,10 +237,19 @@ fn machine_from(value: &serde_json::Value, here: bool) -> TailscaleMachine {
     } else {
         "未命名".into()
     };
+    // 在官网（admin console）改的设备名只落在 DNSName 的前缀上，HostName 是系统主机名。
+    // 列表默认显示官网名，取不到时退回主机名。
+    let display_name = dns_name
+        .split('.')
+        .next()
+        .filter(|label| !label.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| host_name.clone());
     let online = value.get("Online").and_then(|item| item.as_bool()) == Some(true);
     TailscaleMachine {
         host_name,
         dns_name: dns_name.to_string(),
+        display_name,
         ipv4: first_ipv4(value.get("TailscaleIPs")).unwrap_or_default(),
         online,
         here,
@@ -326,6 +342,44 @@ mod tests {
         assert!(report.machines[1].online);
         assert_eq!(report.machines[2].host_name, "desk");
         assert!(!report.machines[2].online);
+    }
+
+    #[test]
+    fn prefers_admin_device_name_over_os_hostname() {
+        let report = parse_status(
+            r#"{"BackendState":"Running","Self":{"HostName":"MacBook Pro","DNSName":"office-mbp.tail1234.ts.net.","Online":true,"TailscaleIPs":["100.101.42.7"]},"Peer":{"lab":{"HostName":"ubuntu-box","DNSName":"lab.tail1234.ts.net.","Online":true,"TailscaleIPs":["100.101.42.8"]},"bare":{"HostName":"desk","Online":false,"TailscaleIPs":["100.101.42.9"]}}}"#,
+        )
+        .unwrap();
+        let by_host = |name: &str| {
+            report
+                .machines
+                .iter()
+                .find(|machine| machine.host_name == name)
+                .unwrap()
+        };
+        assert_eq!(by_host("MacBook Pro").display_name, "office-mbp");
+        assert_eq!(by_host("ubuntu-box").display_name, "lab");
+        assert_eq!(by_host("desk").display_name, "desk");
+        let names: Vec<_> = report
+            .machines
+            .iter()
+            .map(|machine| machine.display_name.as_str())
+            .collect();
+        assert_eq!(names, ["office-mbp", "lab", "desk"]);
+    }
+
+    #[test]
+    fn sorts_display_names_case_insensitively() {
+        let report = parse_status(
+            r#"{"BackendState":"Running","Self":{"HostName":"self","Online":true,"TailscaleIPs":["100.101.42.7"]},"Peer":{"upper":{"HostName":"ROG","Online":true,"TailscaleIPs":["100.101.42.8"]},"lower":{"HostName":"apple","Online":true,"TailscaleIPs":["100.101.42.9"]},"mixed":{"HostName":"Banana","Online":true,"TailscaleIPs":["100.101.42.10"]}}}"#,
+        )
+        .unwrap();
+        let names: Vec<_> = report
+            .machines
+            .iter()
+            .map(|machine| machine.display_name.as_str())
+            .collect();
+        assert_eq!(names, ["self", "apple", "Banana", "ROG"]);
     }
 
     #[test]
