@@ -66,6 +66,21 @@
         <input id="notify-toggle" type="checkbox" />
       </label>
       <p id="settings-error" class="form-error" hidden></p>
+      <div class="card setting-row vault-head">
+        <span class="tile"><i class="ri-upload-2-line" aria-hidden="true"></i></span>
+        <div class="setting-text">
+          <span>加密备份</span>
+          <p id="vault-path" class="path"></p>
+          <p id="vault-help" class="setting-help">把这份配置加密后放进 iCloud Drive，其他 Mac 可以恢复。密码只保存在这台 Mac 的钥匙串里。</p>
+        </div>
+        <div class="setting-actions">
+          <button id="pick-vault-folder" type="button"><i class="ri-folder-open-line" aria-hidden="true"></i><span>文件夹</span></button>
+          <button id="vault-backup" class="primary" type="button"><i class="ri-key-2-line" aria-hidden="true"></i><span>立即备份</span></button>
+        </div>
+      </div>
+      <div id="vault-list" class="card vault-list"></div>
+      <p id="vault-note" class="note" hidden></p>
+      <p id="vault-error" class="form-error" hidden></p>
     </section>
     </div>
     </div>
@@ -176,6 +191,33 @@
           <span class="spacer"></span>
           <button id="cancel-edit" type="button" value="cancel">取消</button>
           <button class="primary" type="submit"><i class="ri-check-line" aria-hidden="true"></i><span>保存</span></button>
+        </footer>
+      </form>
+    </dialog>
+
+    <dialog id="vault-password" class="sheet narrow">
+      <form id="vault-password-form" autocomplete="off">
+        <header class="sheet-head">
+          <span class="tile"><i class="ri-key-2-line" aria-hidden="true"></i></span>
+          <h2 id="vault-password-title">输入密码</h2>
+          <button id="close-vault-password" class="icon" type="button" aria-label="关闭"><i class="ri-close-line" aria-hidden="true"></i></button>
+        </header>
+        <div class="sheet-body">
+          <p id="vault-password-note" class="note"></p>
+          <label class="wide">
+            密码
+            <span class="password-line">
+              <input id="vault-password-input" type="password" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" />
+              <button id="toggle-vault-password" class="icon" type="button" aria-label="显示密码"><i class="ri-eye-line" aria-hidden="true"></i></button>
+            </span>
+          </label>
+          <p id="vault-password-help" class="setting-help"></p>
+          <p id="vault-password-error" class="form-error" hidden></p>
+        </div>
+        <footer class="sheet-foot">
+          <span class="spacer"></span>
+          <button id="vault-password-cancel" type="button">取消</button>
+          <button class="primary" type="submit"><i class="ri-check-line" aria-hidden="true"></i><span>确定</span></button>
         </footer>
       </form>
     </dialog>

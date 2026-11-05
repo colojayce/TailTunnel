@@ -53,6 +53,9 @@ ssh.pids
 askpass.sh
 pw-*
 
+# 加密备份（用户把备份文件夹选在仓库里时也不该提交）
+*.vault.json
+
 *.db
 *.sqlite
 *.sqlite3

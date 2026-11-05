@@ -208,6 +208,33 @@ impl TunnelManager {
         save_store_at(&self.tunnel_file, &self.tunnels)
     }
 
+    pub fn tunnels(&self) -> Vec<Tunnel> {
+        self.tunnels.clone()
+    }
+
+    /// Replaces the whole config after a snapshot was merged into it. Running
+    /// tunnels keep their process; restored tunnels start out stopped.
+    pub fn replace_tunnels(&mut self, tunnels: Vec<Tunnel>) -> Result<(), String> {
+        if self.live.values().any(|live| live.running.is_some()) {
+            return Err("先停掉正在跑的隧道，再恢复备份。".into());
+        }
+        let known: std::collections::HashSet<String> =
+            tunnels.iter().map(|tunnel| tunnel.id.clone()).collect();
+        self.live.retain(|id, _| known.contains(id));
+        for tunnel in &tunnels {
+            self.live
+                .entry(tunnel.id.clone())
+                .or_insert_with(Live::stopped);
+        }
+        if let Some(selected) = &self.selected {
+            if !known.contains(selected) {
+                self.selected = tunnels.first().map(|tunnel| tunnel.id.clone());
+            }
+        }
+        self.tunnels = tunnels;
+        self.persist()
+    }
+
     pub fn set_tunnel_file(&mut self, path: PathBuf) -> Result<(), String> {
         if self.live.values().any(|live| live.running.is_some()) {
             return Err("先停掉正在跑的隧道，再更换配置文件。".into());

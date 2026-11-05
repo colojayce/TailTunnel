@@ -786,6 +786,85 @@ button.copy i { font-size: 14px; }
 
 .form-error[hidden] { display: none; }
 
+/* 加密备份 */
+
+.setting-actions {
+  display: flex;
+  flex: none;
+  gap: 0.4rem;
+}
+
+#vault-path {
+  margin: 0;
+  color: var(--muted);
+  word-break: break-all;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.vault-head {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  row-gap: 0.85rem;
+  margin-top: 0.85rem;
+}
+
+.vault-head .setting-text { min-width: 0; }
+.vault-head .setting-actions { grid-column: 1 / -1; justify-content: flex-end; }
+
+.vault-list {
+  margin-top: 0.85rem;
+  overflow: hidden;
+}
+
+.vault-list:empty { display: none; }
+
+.vault-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 0.85rem;
+  align-items: center;
+  padding: 0.65rem 0.85rem;
+}
+
+.vault-row + .vault-row { border-top: 1px solid var(--line); }
+
+.vault-name {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  min-width: 0;
+}
+
+.vault-name strong {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.vault-meta {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.vault-row .tile { color: var(--muted); }
+
+.vault-empty {
+  padding: 0.85rem;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+#vault-note { white-space: pre-line; }
+#vault-note[hidden] { display: none; }
+
 /* 编辑弹窗 */
 
 dialog {
@@ -806,6 +885,8 @@ dialog form {
 }
 
 dialog::backdrop { background: rgba(20, 22, 28, 0.32); backdrop-filter: blur(2px); }
+
+.sheet.narrow { width: min(26rem, calc(100vw - 3rem)); }
 
 .sheet-head {
   display: flex;

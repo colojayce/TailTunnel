@@ -186,11 +186,23 @@ pub fn save_store(dir: &Path, tunnels: &[Tunnel]) -> Result<(), String> {
 }
 
 pub fn save_store_at(path: &Path, tunnels: &[Tunnel]) -> Result<(), String> {
-    let text = serde_json::to_string_pretty(&FileStore {
+    let text = store_text(tunnels)?;
+    write_private_atomic(path, &text)
+}
+
+/// The same bytes `tunnels.json` holds, used as the payload of an encrypted
+/// snapshot so a backup can be restored into any config file.
+pub fn store_text(tunnels: &[Tunnel]) -> Result<String, String> {
+    serde_json::to_string_pretty(&FileStore {
         tunnels: tunnels.to_vec(),
     })
-    .map_err(|e| format!("写入配置失败：{e}"))?;
-    write_private_atomic(path, &text)
+    .map_err(|e| format!("写入配置失败：{e}"))
+}
+
+pub fn parse_store(bytes: &[u8]) -> Result<Vec<Tunnel>, String> {
+    let store: FileStore =
+        serde_json::from_slice(bytes).map_err(|e| format!("备份内容无法解析：{e}"))?;
+    Ok(store.tunnels)
 }
 
 pub fn tunnel_export(tunnel: &Tunnel) -> Result<String, String> {
@@ -643,6 +655,7 @@ pub fn display_command(args: &[String]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn sample_draft() -> TunnelDraft {
@@ -673,11 +686,14 @@ mod tests {
     }
 
     fn temp_key(name: &str) -> std::path::PathBuf {
+        // 并行测试里单纯用纳秒可能重名，再补一个进程内序号。
+        static SEQUENCE: AtomicU64 = AtomicU64::new(0);
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let dir = std::env::temp_dir().join(format!("tailtunnel-key-{nanos}"));
+        let sequence = SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("tailtunnel-key-{nanos}-{sequence}"));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join(name);
         std::fs::write(&path, "key").unwrap();

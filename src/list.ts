@@ -39,6 +39,19 @@ const jumpUserInput = document.querySelector<HTMLInputElement>("#jump-user")!;
 const jumpPasswordInput = document.querySelector<HTMLInputElement>("#jump-password")!;
 const autoReconnect = document.querySelector<HTMLInputElement>("#auto-reconnect")!;
 const notifyToggle = document.querySelector<HTMLInputElement>("#notify-toggle")!;
+const vaultPath = document.querySelector<HTMLElement>("#vault-path")!;
+const vaultHelp = document.querySelector<HTMLElement>("#vault-help")!;
+const vaultList = document.querySelector<HTMLElement>("#vault-list")!;
+const vaultNote = document.querySelector<HTMLElement>("#vault-note")!;
+const vaultError = document.querySelector<HTMLElement>("#vault-error")!;
+const vaultBackupButton = document.querySelector<HTMLButtonElement>("#vault-backup")!;
+const vaultPasswordDialog = document.querySelector<HTMLDialogElement>("#vault-password")!;
+const vaultPasswordForm = document.querySelector<HTMLFormElement>("#vault-password-form")!;
+const vaultPasswordTitle = document.querySelector<HTMLElement>("#vault-password-title")!;
+const vaultPasswordNote = document.querySelector<HTMLElement>("#vault-password-note")!;
+const vaultPasswordInput = document.querySelector<HTMLInputElement>("#vault-password-input")!;
+const vaultPasswordHelp = document.querySelector<HTMLElement>("#vault-password-help")!;
+const vaultPasswordError = document.querySelector<HTMLElement>("#vault-password-error")!;
 
 let snapshot: Snapshot = { tunnels: [], selectedId: null, configPath: "", notify: true };
 let editingId: string | null = null;
@@ -767,6 +780,297 @@ notifyToggle.addEventListener("change", () => {
     });
 });
 
+const NEED_PASSWORD = "需要密码。";
+
+type VaultStatus = {
+  folder: string;
+  available: boolean;
+  configured: boolean;
+  label: string;
+  revision: number;
+  unlocked: boolean;
+  minPasswordLen: number;
+  maxPasswordLen: number;
+  passwordSymbols: string;
+};
+
+type BackupEntry = {
+  file: string;
+  label: string;
+  device: string;
+  savedAt: number;
+  revision: number;
+  vaultId: string;
+  keyId: string;
+};
+
+type CredentialConflict = {
+  tunnelId: string;
+  tunnelName: string;
+  fields: string[];
+};
+
+type RestoreReport = {
+  added: number;
+  updated: number;
+  conflicts: CredentialConflict[];
+  snapshot: Snapshot;
+};
+
+let vaultStatus: VaultStatus | null = null;
+let vaultBusy = false;
+let passwordResolve: ((value: string | null) => void) | null = null;
+let passwordEnforce = false;
+
+function vaultTime(seconds: number): string {
+  if (!seconds) return "";
+  return new Date(seconds * 1000).toLocaleString("zh-CN", {
+    year: "numeric",
+    month: "numeric",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+/** The same rules the backend applies when a new password is set. */
+function checkNewPassword(value: string): string | null {
+  const min = vaultStatus?.minPasswordLen ?? 10;
+  const max = vaultStatus?.maxPasswordLen ?? 32;
+  const symbols = vaultStatus?.passwordSymbols ?? "!@#$%^&*-_+=.?";
+  if (!value) return "密码不能为空。";
+  for (const char of value) {
+    if (!/[A-Za-z0-9]/.test(char) && !symbols.includes(char)) {
+      return `密码只能用字母、数字和这些符号：${symbols}`;
+    }
+  }
+  if (value.length < min) return `密码至少要 ${min} 个字符。`;
+  if (value.length > max) return `密码最多 ${max} 个字符。`;
+  if (!/[A-Za-z]/.test(value) || !/[0-9]/.test(value)) return "密码要同时包含字母和数字。";
+  return null;
+}
+
+function paintVaultPasswordToggle(shown: boolean) {
+  const button = document.querySelector<HTMLButtonElement>("#toggle-vault-password")!;
+  button.replaceChildren(icon(shown ? "eye-off-line" : "eye-line"));
+  button.setAttribute("aria-label", shown ? "隐藏密码" : "显示密码");
+  button.title = shown ? "隐藏密码" : "显示密码";
+}
+
+function askVaultPassword(title: string, note: string, enforce: boolean): Promise<string | null> {
+  return new Promise((resolve) => {
+    passwordResolve?.(null);
+    passwordResolve = resolve;
+    passwordEnforce = enforce;
+    vaultPasswordTitle.textContent = title;
+    vaultPasswordNote.textContent = note;
+    vaultPasswordError.hidden = true;
+    vaultPasswordInput.value = "";
+    vaultPasswordInput.type = "password";
+    paintVaultPasswordToggle(false);
+    vaultPasswordHelp.textContent = enforce
+      ? `${vaultStatus?.minPasswordLen ?? 10}–${vaultStatus?.maxPasswordLen ?? 32} 个字符；字母和数字都要有，符号只能用 ${vaultStatus?.passwordSymbols ?? "!@#$%^&*-_+=.?"}`
+      : "打开旧备份时不检查新密码规则。";
+    vaultPasswordDialog.showModal();
+    vaultPasswordInput.focus();
+  });
+}
+
+function settleVaultPassword(value: string | null) {
+  const resolve = passwordResolve;
+  passwordResolve = null;
+  vaultPasswordInput.value = "";
+  if (vaultPasswordDialog.open) vaultPasswordDialog.close();
+  resolve?.(value);
+}
+
+vaultPasswordForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  const value = vaultPasswordInput.value;
+  if (passwordEnforce) {
+    const problem = checkNewPassword(value);
+    if (problem) {
+      vaultPasswordError.textContent = problem;
+      vaultPasswordError.hidden = false;
+      return;
+    }
+  } else if (!value) {
+    vaultPasswordError.textContent = "请输入密码。";
+    vaultPasswordError.hidden = false;
+    return;
+  }
+  settleVaultPassword(value);
+});
+
+document.querySelector("#close-vault-password")!.addEventListener("click", () => settleVaultPassword(null));
+document.querySelector("#vault-password-cancel")!.addEventListener("click", () => settleVaultPassword(null));
+vaultPasswordDialog.addEventListener("close", () => {
+  if (passwordResolve) settleVaultPassword(null);
+});
+document.querySelector<HTMLButtonElement>("#toggle-vault-password")!.addEventListener("click", () => {
+  const show = vaultPasswordInput.type === "password";
+  vaultPasswordInput.type = show ? "text" : "password";
+  paintVaultPasswordToggle(show);
+});
+
+function vaultProblem(error: unknown) {
+  vaultError.hidden = false;
+  vaultError.textContent = errorText(error);
+}
+
+function paintVault() {
+  const status = vaultStatus;
+  if (!status) return;
+  vaultPath.textContent = status.folder || "找不到 iCloud Drive";
+  if (!status.available) {
+    vaultHelp.textContent = "找不到这个文件夹。点“文件夹”可以换一个目录，比如 iCloud Drive 里的其他位置。";
+  } else if (status.configured) {
+    vaultHelp.textContent = `已配置「${status.label || "未命名"}」，当前第 ${status.revision} 版。密码${status.unlocked ? "已解锁" : "按需从这台 Mac 的钥匙串读取"}。`;
+  } else {
+    vaultHelp.textContent = "第一次备份时会让你设一个密码；其他 Mac 恢复这份配置时要用它。密码只保存在各自的钥匙串里。";
+  }
+  vaultBackupButton.disabled = vaultBusy;
+}
+
+async function paintVaultBackups() {
+  const entries = await invoke<BackupEntry[]>("vault_backups");
+  vaultList.replaceChildren();
+  if (!entries.length) {
+    const empty = document.createElement("p");
+    empty.className = "vault-empty";
+    empty.textContent = "还没有备份。";
+    vaultList.append(empty);
+    return;
+  }
+  for (const entry of entries) {
+    const row = document.createElement("div");
+    row.className = "vault-row";
+    const tile = document.createElement("span");
+    tile.className = "tile";
+    tile.append(icon("file-settings-line"));
+    const name = document.createElement("div");
+    name.className = "vault-name";
+    const label = document.createElement("strong");
+    label.textContent = entry.label || "未命名配置";
+    const meta = document.createElement("span");
+    meta.className = "vault-meta";
+    meta.textContent = `${entry.device || "未知设备"} · ${vaultTime(entry.savedAt)} · 第 ${entry.revision} 版`;
+    name.append(label, meta);
+    const restore = document.createElement("button");
+    restore.type = "button";
+    restore.textContent = "恢复";
+    restore.disabled = vaultBusy;
+    restore.addEventListener("click", () => void restoreBackup(entry));
+    row.append(tile, name, restore);
+    vaultList.append(row);
+  }
+}
+
+async function refreshVault() {
+  try {
+    vaultStatus = await invoke<VaultStatus>("vault_status");
+    paintVault();
+    await paintVaultBackups();
+  } catch (error) {
+    vaultProblem(error);
+  }
+}
+
+async function backupNow(password: string | null = null) {
+  if (vaultBusy) return;
+  vaultBusy = true;
+  vaultError.hidden = true;
+  vaultNote.hidden = true;
+  paintVault();
+  try {
+    const status = await invoke<VaultStatus>("vault_backup", { password, label: "" });
+    vaultStatus = status;
+    await paintVaultBackups();
+    vaultNote.hidden = false;
+    vaultNote.textContent = `已备份第 ${status.revision} 版。`;
+  } catch (error) {
+    if (errorText(error) === NEED_PASSWORD) {
+      const first = !vaultStatus?.configured;
+      const value = await askVaultPassword(
+        first ? "设置备份密码" : "输入备份密码",
+        first ? "其他 Mac 恢复这份配置时要用这个密码。" : "这台 Mac 的钥匙串里没有这份配置的密码。",
+        first,
+      );
+      vaultBusy = false;
+      paintVault();
+      if (value !== null) await backupNow(value);
+      return;
+    }
+    vaultProblem(error);
+  } finally {
+    vaultBusy = false;
+    paintVault();
+  }
+}
+
+async function restoreBackup(entry: BackupEntry) {
+  if (vaultBusy) return;
+  const name = entry.label || "这份备份";
+  if (!window.confirm(`用「${name}」更新本机配置？\n\n备份里的转发设置会覆盖本机同名隧道；本机已有的密码和私钥不会被覆盖，有冲突时会列出来。`)) return;
+  vaultBusy = true;
+  vaultError.hidden = true;
+  vaultNote.hidden = true;
+  paintVault();
+  try {
+    let report: RestoreReport;
+    try {
+      report = await invoke<RestoreReport>("vault_restore", { file: entry.file, password: null });
+    } catch (error) {
+      if (errorText(error) !== NEED_PASSWORD) throw error;
+      const value = await askVaultPassword("解开备份", "这份备份需要密码。", false);
+      if (value === null) return;
+      report = await invoke<RestoreReport>("vault_restore", { file: entry.file, password: value });
+    }
+    snapshot = report.snapshot;
+    render();
+    vaultStatus = await invoke<VaultStatus>("vault_status");
+    await paintVaultBackups();
+    const summary = `已从备份更新：新增 ${report.added} 条，覆盖 ${report.updated} 条。`;
+    if (report.conflicts.length) {
+      const lines = report.conflicts
+        .map((conflict) => `${conflict.tunnelName}：${conflict.fields.join("、")}`)
+        .join("\n");
+      vaultNote.hidden = false;
+      vaultNote.textContent = `${summary}\n这些登录信息本机已有，没有覆盖，请手动处理：\n${lines}`;
+      window.alert(`备份里有和本机不一致的登录信息，已保留本机设置，请手动处理：\n\n${lines}`);
+    } else {
+      vaultNote.hidden = false;
+      vaultNote.textContent = summary;
+    }
+  } catch (error) {
+    vaultProblem(error);
+  } finally {
+    vaultBusy = false;
+    paintVault();
+  }
+}
+
+vaultBackupButton.addEventListener("click", () => void backupNow());
+
+document.querySelector<HTMLButtonElement>("#pick-vault-folder")!.addEventListener("click", () => {
+  vaultError.hidden = true;
+  void open({
+    title: "备份文件夹",
+    directory: true,
+    multiple: false,
+    defaultPath: vaultStatus?.folder || undefined,
+  }).then(async (picked) => {
+    if (typeof picked !== "string") return;
+    try {
+      vaultStatus = await invoke<VaultStatus>("vault_set_folder", { folder: picked });
+      paintVault();
+      await paintVaultBackups();
+    } catch (error) {
+      vaultProblem(error);
+    }
+  }).catch((error: unknown) => vaultProblem(error));
+});
+
 document.querySelector<HTMLButtonElement>("#create")!.addEventListener("click", () => openEditor());
 
 type AppView = "tunnels" | "tailscale" | "settings";
@@ -800,6 +1104,7 @@ function showView(view: AppView) {
   document.querySelector("#nav-tailscale")!.classList.toggle("current", view === "tailscale");
   document.querySelector("#nav-settings")!.classList.toggle("current", view === "settings");
   if (view === "tailscale") void refreshMachines(true);
+  if (view === "settings") void refreshVault();
 }
 
 function paintTailscale(report: TailscaleReport) {
