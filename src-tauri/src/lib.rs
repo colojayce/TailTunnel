@@ -1,7 +1,9 @@
 mod latency;
 mod manager;
 mod model;
+pub mod secrets;
 mod tailscale;
+pub mod vault;
 
 use manager::{Listener, Running, TunnelManager, conflict_sentence, parse_lsof, signal_pid};
 use model::{Snapshot, TunnelDraft, TunnelStatus, TunnelView, write_private_atomic};
