@@ -55,8 +55,21 @@ const vaultPasswordError = document.querySelector<HTMLElement>("#vault-password-
 
 let snapshot: Snapshot = { tunnels: [], selectedId: null, configPath: "", notify: true };
 let editingId: string | null = null;
-let draggingRow: { id: string; row: HTMLElement; startY: number; active: boolean; pointerId: number } | null = null;
+type RowDrag = {
+  id: string;
+  row: HTMLElement;
+  startY: number;
+  /** Where inside the row the pointer grabbed it. */
+  grab: number;
+  active: boolean;
+  pointerId: number;
+};
+
+let draggingRow: RowDrag | null = null;
 let renderPending = false;
+const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
+const DRAG_SLIDE_MS = 160;
+const DRAG_SETTLE_MS = 170;
 let seenArrival = false;
 let shownStatus = "";
 let tunnelsLoaded = false;
@@ -269,7 +282,8 @@ function beginRowDrag(event: PointerEvent, id: string, row: HTMLElement) {
   } catch {
     // Without capture the drag still works while the pointer stays over the list.
   }
-  draggingRow = { id, row, startY: event.clientY, active: false, pointerId: event.pointerId };
+  const grab = event.clientY - row.getBoundingClientRect().top;
+  draggingRow = { id, row, startY: event.clientY, grab, active: false, pointerId: event.pointerId };
 
   const move = (moveEvent: PointerEvent) => {
     const drag = draggingRow;
@@ -277,10 +291,11 @@ function beginRowDrag(event: PointerEvent, id: string, row: HTMLElement) {
     if (!drag.active) {
       if (Math.abs(moveEvent.clientY - drag.startY) < 4) return;
       drag.active = true;
+      row.style.transition = "none";
       row.classList.add("dragging");
       list.classList.add("sorting");
     }
-    reorderRow(row, moveEvent.clientY);
+    followPointer(drag, moveEvent.clientY);
   };
 
   const stop = (endEvent: PointerEvent) => {
@@ -300,18 +315,29 @@ function beginRowDrag(event: PointerEvent, id: string, row: HTMLElement) {
       }
       return;
     }
-    row.classList.remove("dragging");
     list.classList.remove("sorting");
     const after = row.nextElementSibling;
     const before = after instanceof HTMLElement && after.classList.contains("row") ? after.dataset.id ?? null : null;
     renderPending = false;
-    void invoke<Snapshot>("move_tunnel", { id: drag.id, before })
-      .then((next) => applySnapshot(next))
-      .catch((error: unknown) => {
-        summary.textContent = errorText(error);
-        summary.className = "info bad";
-        void refresh();
-      });
+    const finish = () => {
+      row.classList.remove("dragging");
+      void invoke<Snapshot>("move_tunnel", { id: drag.id, before })
+        .then((next) => applySnapshot(next))
+        .catch((error: unknown) => {
+          summary.textContent = errorText(error);
+          summary.className = "info bad";
+          void refresh();
+        });
+    };
+    if (reducedMotion.matches) {
+      row.style.transform = "";
+      finish();
+      return;
+    }
+    // Let the lifted row slide down into its slot before the list is redrawn.
+    row.style.transition = `transform ${DRAG_SETTLE_MS}ms cubic-bezier(0.2, 0.7, 0.3, 1)`;
+    row.style.transform = "translateY(0)";
+    window.setTimeout(finish, DRAG_SETTLE_MS);
   };
 
   list.addEventListener("pointermove", move);
@@ -320,18 +346,38 @@ function beginRowDrag(event: PointerEvent, id: string, row: HTMLElement) {
   list.addEventListener("lostpointercapture", stop);
 }
 
-/** Puts the dragged row where the pointer is, so the list follows the drag. */
-function reorderRow(row: HTMLElement, pointerY: number) {
-  const others = [...list.querySelectorAll<HTMLElement>(".row")].filter((other) => other !== row);
-  const next = others.find((other) => {
-    const rect = other.getBoundingClientRect();
-    return pointerY < rect.top + rect.height / 2;
-  });
+/**
+ * Keeps the lifted row under the pointer and slides the other rows aside: their
+ * layout moves at once, then a transform eases them into the new places (FLIP).
+ */
+function followPointer(drag: RowDrag, pointerY: number) {
+  const rows = [...list.querySelectorAll<HTMLElement>(".row")];
+  const tops = new Map(rows.map((el) => [el, el.offsetTop]));
+  const rect = list.getBoundingClientRect();
+  const pointer = pointerY - rect.top + list.scrollTop;
+
+  const others = rows.filter((el) => el !== drag.row);
+  const next = others.find((el) => pointer < el.offsetTop + el.offsetHeight / 2);
   if (next) {
-    if (next.previousElementSibling !== row) list.insertBefore(row, next);
-  } else if (list.lastElementChild !== row) {
-    list.append(row);
+    if (next.previousElementSibling !== drag.row) list.insertBefore(drag.row, next);
+  } else if (list.lastElementChild !== drag.row) {
+    list.append(drag.row);
   }
+
+  if (!reducedMotion.matches) {
+    for (const el of others) {
+      const delta = (tops.get(el) ?? el.offsetTop) - el.offsetTop;
+      if (delta === 0) continue;
+      el.style.transition = "none";
+      el.style.transform = `translateY(${delta}px)`;
+      void el.offsetHeight;
+      el.style.transition = `transform ${DRAG_SLIDE_MS}ms ease`;
+      el.style.transform = "";
+    }
+  }
+
+  const top = rect.top - list.scrollTop + drag.row.offsetTop;
+  drag.row.style.transform = `translateY(${pointerY - drag.grab - top}px)`;
 }
 
 function icon(name: string): HTMLElement {

@@ -313,6 +313,7 @@ button.danger:hover { background: var(--bad-soft); }
 /* 隧道列表 */
 
 .list {
+  position: relative;
   flex: 1;
   min-width: 0;
   min-height: 0;
@@ -380,8 +381,10 @@ button.danger:hover { background: var(--bad-soft); }
 .drag-handle:hover { background: var(--cell); color: var(--ink-2); }
 
 .row.dragging {
+  z-index: 2;
   border-color: var(--accent);
   box-shadow: 0 0 0 3px var(--accent-soft), var(--shadow-lift);
+  will-change: transform;
 }
 
 .row.dragging > .drag-handle { cursor: grabbing; color: var(--accent); }
