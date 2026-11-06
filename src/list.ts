@@ -7,7 +7,7 @@ import "./icons.css";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { homeDir } from "@tauri-apps/api/path";
-import { open, save } from "@tauri-apps/plugin-dialog";
+import { confirm, open, save } from "@tauri-apps/plugin-dialog";
 import { emptyArt, type EmptyScene } from "./empty";
 import { MAX_LOG_CHARS, latencyLines, statusLabel, type AuthMethod, type Forward, type LatencyReport, type LogLine, type LogPage, type PortNote, type Snapshot, type Tunnel, type TunnelStatus } from "./types";
 
@@ -55,6 +55,8 @@ const vaultPasswordError = document.querySelector<HTMLElement>("#vault-password-
 
 let snapshot: Snapshot = { tunnels: [], selectedId: null, configPath: "", notify: true };
 let editingId: string | null = null;
+let draggingRow: { id: string; row: HTMLElement; startY: number; active: boolean; pointerId: number } | null = null;
+let renderPending = false;
 let seenArrival = false;
 let shownStatus = "";
 let tunnelsLoaded = false;
@@ -85,7 +87,19 @@ function busy(status: TunnelStatus): boolean {
   return status === "running" || status === "connecting" || status === "waiting";
 }
 
+/** Applies the newest snapshot only: a command's reply can arrive after a newer event. */
+function applySnapshot(next: Snapshot) {
+  if ((next.revision ?? 0) < (snapshot.revision ?? 0)) return;
+  snapshot = next;
+  render();
+}
+
 function render() {
+  // A drag owns the rows while it runs; redraw once it is done.
+  if (draggingRow) {
+    renderPending = true;
+    return;
+  }
   const count = snapshot.tunnels.length;
   const running = runningCount();
   const connecting = connectingCount();
@@ -117,10 +131,13 @@ function render() {
   for (const tunnel of snapshot.tunnels) {
     const row = document.createElement("div");
     row.className = tunnel.id === snapshot.selectedId ? `row ${tunnel.status} selected` : `row ${tunnel.status}`;
+    row.dataset.id = tunnel.id;
     row.addEventListener("click", (event) => {
       if (event.target instanceof Element && event.target.closest("button:not(.row-main)")) return;
       void select(tunnel.id);
     });
+
+    const handle = dragHandle(tunnel, row);
 
     const tile = document.createElement("span");
     tile.className = "tile";
@@ -191,7 +208,7 @@ function render() {
     });
     actions.append(action, measure, edit);
 
-    row.append(tile, main, detail, status, actions);
+    row.append(handle, tile, main, detail, status, actions);
     if (tunnel.message) {
       const message = document.createElement("span");
       message.className = "message";
@@ -231,6 +248,92 @@ async function measureLatency(tunnel: Tunnel) {
   render();
 }
 
+/** The grip at the left edge of a row; dragging it moves the tunnel. */
+function dragHandle(tunnel: Tunnel, row: HTMLElement): HTMLElement {
+  const handle = document.createElement("span");
+  handle.className = "drag-handle";
+  handle.setAttribute("aria-hidden", "true");
+  handle.title = "拖动调整顺序";
+  handle.addEventListener("click", (event) => event.stopPropagation());
+  handle.addEventListener("pointerdown", (event) => beginRowDrag(event, tunnel.id, row));
+  return handle;
+}
+
+function beginRowDrag(event: PointerEvent, id: string, row: HTMLElement) {
+  if (event.button !== 0 || draggingRow) return;
+  event.preventDefault();
+  // Capture on the list, not the handle: reordering moves the row around,
+  // and a capture target that leaves the document would end the drag.
+  try {
+    list.setPointerCapture(event.pointerId);
+  } catch {
+    // Without capture the drag still works while the pointer stays over the list.
+  }
+  draggingRow = { id, row, startY: event.clientY, active: false, pointerId: event.pointerId };
+
+  const move = (moveEvent: PointerEvent) => {
+    const drag = draggingRow;
+    if (!drag || drag.pointerId !== moveEvent.pointerId) return;
+    if (!drag.active) {
+      if (Math.abs(moveEvent.clientY - drag.startY) < 4) return;
+      drag.active = true;
+      row.classList.add("dragging");
+      list.classList.add("sorting");
+    }
+    reorderRow(row, moveEvent.clientY);
+  };
+
+  const stop = (endEvent: PointerEvent) => {
+    if (draggingRow && draggingRow.pointerId !== endEvent.pointerId) return;
+    list.removeEventListener("pointermove", move);
+    list.removeEventListener("pointerup", stop);
+    list.removeEventListener("pointercancel", stop);
+    list.removeEventListener("lostpointercapture", stop);
+    const drag = draggingRow;
+    draggingRow = null;
+    if (!drag) return;
+    if (list.hasPointerCapture(endEvent.pointerId)) list.releasePointerCapture(endEvent.pointerId);
+    if (!drag.active) {
+      if (renderPending) {
+        renderPending = false;
+        render();
+      }
+      return;
+    }
+    row.classList.remove("dragging");
+    list.classList.remove("sorting");
+    const after = row.nextElementSibling;
+    const before = after instanceof HTMLElement && after.classList.contains("row") ? after.dataset.id ?? null : null;
+    renderPending = false;
+    void invoke<Snapshot>("move_tunnel", { id: drag.id, before })
+      .then((next) => applySnapshot(next))
+      .catch((error: unknown) => {
+        summary.textContent = errorText(error);
+        summary.className = "info bad";
+        void refresh();
+      });
+  };
+
+  list.addEventListener("pointermove", move);
+  list.addEventListener("pointerup", stop);
+  list.addEventListener("pointercancel", stop);
+  list.addEventListener("lostpointercapture", stop);
+}
+
+/** Puts the dragged row where the pointer is, so the list follows the drag. */
+function reorderRow(row: HTMLElement, pointerY: number) {
+  const others = [...list.querySelectorAll<HTMLElement>(".row")].filter((other) => other !== row);
+  const next = others.find((other) => {
+    const rect = other.getBoundingClientRect();
+    return pointerY < rect.top + rect.height / 2;
+  });
+  if (next) {
+    if (next.previousElementSibling !== row) list.insertBefore(row, next);
+  } else if (list.lastElementChild !== row) {
+    list.append(row);
+  }
+}
+
 function icon(name: string): HTMLElement {
   const el = document.createElement("i");
   el.className = `ri-${name}`;
@@ -266,14 +369,13 @@ function emptyState(scene: EmptyScene, title: string, text: string, action?: HTM
 }
 
 async function refresh() {
-  snapshot = await invoke<Snapshot>("list_tunnels");
+  const next = await invoke<Snapshot>("list_tunnels");
   tunnelsLoaded = true;
-  render();
+  applySnapshot(next);
 }
 
 async function select(id: string) {
-  snapshot = await invoke<Snapshot>("select_tunnel", { id });
-  render();
+  applySnapshot(await invoke<Snapshot>("select_tunnel", { id }));
 }
 
 const pendingTunnels = new Set<string>();
@@ -283,8 +385,7 @@ async function toggle(tunnel: Tunnel) {
   pendingTunnels.add(tunnel.id);
   const command = busy(tunnel.status) ? "stop_tunnel" : "start_tunnel";
   try {
-    snapshot = await invoke<Snapshot>(command, { id: tunnel.id });
-    render();
+    applySnapshot(await invoke<Snapshot>(command, { id: tunnel.id }));
   } catch (error) {
     await refresh();
     summary.textContent = errorText(error);
@@ -753,8 +854,7 @@ document.querySelector<HTMLButtonElement>("#pick-config")!.addEventListener("cli
   }).then(async (picked) => {
     if (typeof picked !== "string") return;
     try {
-      snapshot = await invoke<Snapshot>("set_config_path", { path: picked });
-      render();
+      applySnapshot(await invoke<Snapshot>("set_config_path", { path: picked }));
     } catch (error) {
       settingsError.hidden = false;
       settingsError.textContent = errorText(error);
@@ -769,10 +869,7 @@ notifyToggle.addEventListener("change", () => {
   const on = notifyToggle.checked;
   settingsError.hidden = true;
   void invoke<Snapshot>("set_notify", { on })
-    .then((next) => {
-      snapshot = next;
-      render();
-    })
+    .then((next) => applySnapshot(next))
     .catch((error: unknown) => {
       notifyToggle.checked = snapshot.notify;
       settingsError.hidden = false;
@@ -1026,8 +1123,7 @@ async function restoreBackup(entry: BackupEntry) {
       if (value === null) return;
       report = await invoke<RestoreReport>("vault_restore", { file: entry.file, password: value });
     }
-    snapshot = report.snapshot;
-    render();
+    applySnapshot(report.snapshot);
     vaultStatus = await invoke<VaultStatus>("vault_status");
     await paintVaultBackups();
     const summary = `已从备份更新：新增 ${report.added} 条，覆盖 ${report.updated} 条。`;
@@ -1337,16 +1433,43 @@ function paintPasswordToggle(shown: boolean) {
   button.title = shown ? "隐藏密码" : "显示密码";
 }
 
-deleteButton.addEventListener("click", () => {
-  if (!editingId) return;
-  if (!window.confirm("删除这条隧道？正在运行的连接会停掉。")) return;
-  void invoke<Snapshot>("delete_tunnel", { id: editingId })
-    .then((next) => {
-      snapshot = next;
-      editor.close();
+deleteButton.addEventListener("click", async () => {
+  const tunnel = tunnelById(editingId);
+  if (!tunnel || deleteButton.disabled) return;
+  const name = tunnel.note || `${tunnel.user}@${tunnel.host}`;
+  deleteButton.disabled = true;
+  try {
+    const confirmed = await confirm(`删除隧道“${name}”？`, {
+      title: "删除隧道",
+      kind: "warning",
+      okLabel: "删除",
+      cancelLabel: "取消",
+    });
+    if (!confirmed || editingId !== tunnel.id) return;
+    const current = tunnelById(tunnel.id);
+    if (!current) return;
+    if (busy(current.status)) {
+      const message = current.status === "waiting"
+        ? `隧道“${name}”正在等待重连。删除会取消自动重连，确定先停止再删除？`
+        : `隧道“${name}”正在运行或连接。删除会关闭这条隧道，确定先关闭再删除？`;
+      const stopConfirmed = await confirm(message, {
+        title: "关闭并删除隧道",
+        kind: "warning",
+        okLabel: "停止并删除",
+        cancelLabel: "取消",
+      });
+      if (!stopConfirmed || editingId !== tunnel.id) return;
+      snapshot = await invoke<Snapshot>("stop_tunnel", { id: tunnel.id });
       render();
-    })
-    .catch((error: unknown) => showError(errorText(error)));
+    }
+    snapshot = await invoke<Snapshot>("delete_tunnel", { id: tunnel.id });
+    editor.close();
+    render();
+  } catch (error) {
+    showError(errorText(error));
+  } finally {
+    deleteButton.disabled = false;
+  }
 });
 
 editorForm.addEventListener("submit", (event) => {
@@ -1367,16 +1490,14 @@ editorForm.addEventListener("submit", (event) => {
   };
   void invoke<Snapshot>("save_tunnel", { draft })
     .then((next) => {
-      snapshot = next;
       editor.close();
-      render();
+      applySnapshot(next);
     })
     .catch((error: unknown) => showError(errorText(error)));
 });
 
 void listen<Snapshot>("tunnels-changed", (event) => {
-  snapshot = event.payload;
-  render();
+  applySnapshot(event.payload);
 });
 
 void listen<LogLine>("tunnel-log", (event) => {

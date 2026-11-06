@@ -325,6 +325,7 @@ button.danger:hover { background: var(--bad-soft); }
 }
 
 .row {
+  position: relative;
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto auto;
   grid-template-rows: auto auto;
@@ -334,7 +335,7 @@ button.danger:hover { background: var(--bad-soft); }
   flex: none;
   width: 100%;
   min-width: 0;
-  padding: 0.75rem 0.75rem 0.75rem 0.85rem;
+  padding: 0.75rem 0.75rem 0.75rem 1.75rem;
   background: var(--surface);
   border: 1px solid var(--line);
   border-radius: var(--radius);
@@ -344,6 +345,48 @@ button.danger:hover { background: var(--bad-soft); }
 }
 
 .row:hover { border-color: var(--line-strong); }
+
+.drag-handle {
+  position: absolute;
+  left: 0.3rem;
+  top: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.1rem;
+  height: 1.9rem;
+  margin-top: -0.95rem;
+  border-radius: 5px;
+  color: var(--faint);
+  opacity: 0;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+  transition: opacity 120ms ease, color 120ms ease, background 120ms ease;
+}
+
+.drag-handle::before {
+  content: "";
+  width: 6px;
+  height: 12px;
+  background-image: radial-gradient(circle, currentColor 1.2px, transparent 1.3px);
+  background-size: 3px 4px;
+}
+
+.row:hover > .drag-handle,
+.row:focus-within > .drag-handle,
+.row.dragging > .drag-handle { opacity: 1; }
+
+.drag-handle:hover { background: var(--cell); color: var(--ink-2); }
+
+.row.dragging {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft), var(--shadow-lift);
+}
+
+.row.dragging > .drag-handle { cursor: grabbing; color: var(--accent); }
+
+.list.sorting { cursor: grabbing; user-select: none; }
 
 .row.selected {
   border-color: var(--accent);

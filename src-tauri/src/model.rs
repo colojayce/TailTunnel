@@ -98,6 +98,9 @@ pub struct TunnelView {
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Snapshot {
+    /// Grows with every snapshot the manager makes, so the window can drop
+    /// one that arrives after a newer one.
+    pub revision: u64,
     pub tunnels: Vec<TunnelView>,
     pub selected_id: Option<String>,
     pub config_path: String,

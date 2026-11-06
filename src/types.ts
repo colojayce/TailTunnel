@@ -35,6 +35,8 @@ export type Tunnel = {
 };
 
 export type Snapshot = {
+  /** Grows with every snapshot, so an older one can be dropped. */
+  revision?: number;
   tunnels: Tunnel[];
   selectedId: string | null;
   configPath: string;

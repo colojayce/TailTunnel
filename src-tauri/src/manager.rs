@@ -92,6 +92,8 @@ pub struct TunnelManager {
     shutting_down: bool,
     notify: bool,
     retry_counter: u64,
+    /// Bumped for every snapshot, so stale ones can be told apart.
+    revision: AtomicU64,
 }
 
 impl TunnelManager {
@@ -119,6 +121,7 @@ impl TunnelManager {
             shutting_down: false,
             notify: settings.notify,
             retry_counter: 0,
+            revision: AtomicU64::new(0),
         })
     }
 
@@ -128,6 +131,7 @@ impl TunnelManager {
 
     pub fn snapshot(&self) -> Snapshot {
         Snapshot {
+            revision: self.revision.fetch_add(1, Ordering::Relaxed) + 1,
             tunnels: self
                 .tunnels
                 .iter()
@@ -282,6 +286,29 @@ impl TunnelManager {
         }
         self.persist()?;
         Ok(pid)
+    }
+
+    /// Moves a tunnel just before `before` (or to the end when it is `None`).
+    pub fn move_tunnel(&mut self, id: &str, before: Option<&str>) -> Result<(), String> {
+        let from = self
+            .tunnels
+            .iter()
+            .position(|tunnel| tunnel.id == id)
+            .ok_or("这条隧道已经不在列表里。")?;
+        let to = match before.filter(|before| *before != id) {
+            Some(before) => match self.tunnels.iter().position(|tunnel| tunnel.id == before) {
+                Some(index) if index < from => index,
+                Some(index) => index - 1,
+                None => self.tunnels.len() - 1,
+            },
+            None => self.tunnels.len() - 1,
+        };
+        if to == from {
+            return Ok(());
+        }
+        let tunnel = self.tunnels.remove(from);
+        self.tunnels.insert(to, tunnel);
+        self.persist()
     }
 
     pub fn prepare_start(&mut self, id: &str) -> Result<StartPlan, String> {
@@ -1268,6 +1295,53 @@ mod tests {
         let view = manager.snapshot().tunnels.into_iter().next().unwrap();
         assert_eq!(view.status, TunnelStatus::Failed);
         assert!(!manager.retry_pending(&id, retry.token));
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn moving_a_tunnel_reorders_and_saves_it() {
+        let (dir, mut manager) = loaded();
+        let a = manager.upsert(draft()).unwrap();
+        let mut second = draft();
+        second.note = "备用".into();
+        let b = manager.upsert(second).unwrap();
+
+        manager.move_tunnel(&b, Some(&a)).unwrap();
+        let order: Vec<String> = manager
+            .snapshot()
+            .tunnels
+            .into_iter()
+            .map(|tunnel| tunnel.id)
+            .collect();
+        assert_eq!(order, vec![b.clone(), a.clone()]);
+
+        manager.move_tunnel(&b, None).unwrap();
+        let order: Vec<String> = manager
+            .snapshot()
+            .tunnels
+            .into_iter()
+            .map(|tunnel| tunnel.id)
+            .collect();
+        assert_eq!(order, vec![a.clone(), b.clone()]);
+
+        let reloaded = TunnelManager::load(dir.clone()).expect("重新读取");
+        let order: Vec<String> = reloaded
+            .snapshot()
+            .tunnels
+            .into_iter()
+            .map(|tunnel| tunnel.id)
+            .collect();
+        assert_eq!(order, vec![a, b]);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn every_snapshot_gets_a_newer_revision() {
+        let (dir, mut manager) = loaded();
+        manager.upsert(draft()).unwrap();
+        let first = manager.snapshot().revision;
+        let second = manager.snapshot().revision;
+        assert!(second > first);
         let _ = fs::remove_dir_all(dir);
     }
 

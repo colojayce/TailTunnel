@@ -88,6 +88,22 @@ fn select_tunnel(app: AppHandle, state: State<AppState>, id: String) -> Result<S
 }
 
 #[tauri::command]
+fn move_tunnel(
+    app: AppHandle,
+    state: State<AppState>,
+    id: String,
+    before: Option<String>,
+) -> Result<Snapshot, String> {
+    let snapshot = {
+        let mut manager = lock(&state);
+        manager.move_tunnel(&id, before.as_deref())?;
+        manager.snapshot()
+    };
+    publish(&app, &snapshot);
+    Ok(snapshot)
+}
+
+#[tauri::command]
 fn set_config_path(
     app: AppHandle,
     state: State<AppState>,
@@ -1127,6 +1143,7 @@ pub fn run() {
             save_tunnel,
             delete_tunnel,
             select_tunnel,
+            move_tunnel,
             set_config_path,
             tunnel_log,
             export_tunnel,
