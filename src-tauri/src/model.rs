@@ -194,7 +194,7 @@ pub fn save_store_at(path: &Path, tunnels: &[Tunnel]) -> Result<(), String> {
 }
 
 /// The same bytes `tunnels.json` holds, used as the payload of an encrypted
-/// snapshot so a backup can be restored into any config file.
+/// snapshot so a synced copy can be merged into any config file.
 pub fn store_text(tunnels: &[Tunnel]) -> Result<String, String> {
     serde_json::to_string_pretty(&FileStore {
         tunnels: tunnels.to_vec(),
@@ -204,7 +204,7 @@ pub fn store_text(tunnels: &[Tunnel]) -> Result<String, String> {
 
 pub fn parse_store(bytes: &[u8]) -> Result<Vec<Tunnel>, String> {
     let store: FileStore =
-        serde_json::from_slice(bytes).map_err(|e| format!("备份内容无法解析：{e}"))?;
+        serde_json::from_slice(bytes).map_err(|e| format!("同步内容无法解析：{e}"))?;
     Ok(store.tunnels)
 }
 

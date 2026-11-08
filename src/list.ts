@@ -39,19 +39,31 @@ const jumpUserInput = document.querySelector<HTMLInputElement>("#jump-user")!;
 const jumpPasswordInput = document.querySelector<HTMLInputElement>("#jump-password")!;
 const autoReconnect = document.querySelector<HTMLInputElement>("#auto-reconnect")!;
 const notifyToggle = document.querySelector<HTMLInputElement>("#notify-toggle")!;
-const vaultPath = document.querySelector<HTMLElement>("#vault-path")!;
-const vaultHelp = document.querySelector<HTMLElement>("#vault-help")!;
-const vaultList = document.querySelector<HTMLElement>("#vault-list")!;
-const vaultNote = document.querySelector<HTMLElement>("#vault-note")!;
-const vaultError = document.querySelector<HTMLElement>("#vault-error")!;
-const vaultBackupButton = document.querySelector<HTMLButtonElement>("#vault-backup")!;
+const syncCard = document.querySelector<HTMLElement>("#sync-card")!;
+const syncGlyph = document.querySelector<HTMLElement>("#sync-glyph")!;
+const syncState = document.querySelector<HTMLElement>("#sync-state")!;
+const syncIntro = document.querySelector<HTMLElement>("#sync-intro")!;
+const syncDevices = document.querySelector<HTMLElement>("#sync-devices")!;
+const syncReport = document.querySelector<HTMLElement>("#sync-report")!;
+const syncError = document.querySelector<HTMLElement>("#sync-error")!;
+const syncFolder = document.querySelector<HTMLElement>("#sync-folder")!;
+const syncNowButton = document.querySelector<HTMLButtonElement>("#sync-now")!;
+const syncUnlockButton = document.querySelector<HTMLButtonElement>("#sync-unlock")!;
+const syncEnableButton = document.querySelector<HTMLButtonElement>("#sync-enable")!;
+const syncDisableButton = document.querySelector<HTMLButtonElement>("#sync-disable")!;
+const syncFolderButton = document.querySelector<HTMLButtonElement>("#sync-folder-pick")!;
+const navSyncDot = document.querySelector<HTMLElement>("#nav-sync-dot")!;
 const vaultPasswordDialog = document.querySelector<HTMLDialogElement>("#vault-password")!;
 const vaultPasswordForm = document.querySelector<HTMLFormElement>("#vault-password-form")!;
 const vaultPasswordTitle = document.querySelector<HTMLElement>("#vault-password-title")!;
 const vaultPasswordNote = document.querySelector<HTMLElement>("#vault-password-note")!;
 const vaultPasswordInput = document.querySelector<HTMLInputElement>("#vault-password-input")!;
+const vaultPasswordAgainField = document.querySelector<HTMLElement>("#vault-password-again-field")!;
+const vaultPasswordAgain = document.querySelector<HTMLInputElement>("#vault-password-again")!;
 const vaultPasswordHelp = document.querySelector<HTMLElement>("#vault-password-help")!;
 const vaultPasswordError = document.querySelector<HTMLElement>("#vault-password-error")!;
+const vaultPasswordAlt = document.querySelector<HTMLButtonElement>("#vault-password-alt")!;
+const vaultPasswordSubmit = document.querySelector<HTMLButtonElement>("#vault-password-submit")!;
 
 let snapshot: Snapshot = { tunnels: [], selectedId: null, configPath: "", notify: true };
 let editingId: string | null = null;
@@ -923,52 +935,71 @@ notifyToggle.addEventListener("change", () => {
     });
 });
 
-const NEED_PASSWORD = "需要密码。";
+const NEED_PASSWORD = "需要同步密码。";
 
-type VaultStatus = {
+type SyncPhase = "off" | "ready" | "locked" | "error";
+
+type SyncDevice = {
+  name: string;
+  savedAt: number;
+  thisMac: boolean;
+};
+
+type SyncStatus = {
   folder: string;
   available: boolean;
-  configured: boolean;
+  enabled: boolean;
   label: string;
-  revision: number;
-  unlocked: boolean;
+  phase: SyncPhase;
+  message: string;
+  lastSync: number;
+  devices: SyncDevice[];
   minPasswordLen: number;
   maxPasswordLen: number;
   passwordSymbols: string;
 };
 
-type BackupEntry = {
-  file: string;
-  label: string;
-  device: string;
-  savedAt: number;
-  revision: number;
-  vaultId: string;
-  keyId: string;
-};
-
-type CredentialConflict = {
+type SyncNote = {
   tunnelId: string;
   tunnelName: string;
+  kind: "loginKept" | "settingsReplaced" | "keptDeleted" | "revived";
   fields: string[];
 };
 
-type RestoreReport = {
+type SyncReport = {
+  from: string;
   added: number;
   updated: number;
-  conflicts: CredentialConflict[];
-  snapshot: Snapshot;
+  removed: number;
+  notes: SyncNote[];
+  uploaded: boolean;
 };
 
-let vaultStatus: VaultStatus | null = null;
-let vaultBusy = false;
-let passwordResolve: ((value: string | null) => void) | null = null;
-let passwordEnforce = false;
+type SyncEvent = {
+  status: SyncStatus;
+  report: SyncReport | null;
+};
 
-function vaultTime(seconds: number): string {
+type CloudVault = {
+  vaultId: string;
+  label: string;
+  devices: string[];
+  savedAt: number;
+};
+
+let syncStatus: SyncStatus | null = null;
+/** The last merge worth telling the user about, until they dismiss it. */
+let syncReportShown: SyncReport | null = null;
+let syncWorking = false;
+let syncCommandError = "";
+
+function relativeTime(seconds: number): string {
   if (!seconds) return "";
+  const gap = Math.max(0, Date.now() / 1000 - seconds);
+  if (gap < 60) return "刚刚";
+  if (gap < 3600) return `${Math.floor(gap / 60)} 分钟前`;
+  if (gap < 86400) return `${Math.floor(gap / 3600)} 小时前`;
   return new Date(seconds * 1000).toLocaleString("zh-CN", {
-    year: "numeric",
     month: "numeric",
     day: "numeric",
     hour: "2-digit",
@@ -976,11 +1007,46 @@ function vaultTime(seconds: number): string {
   });
 }
 
+/** Shows iCloud Drive paths the way Finder names them. */
+function prettyFolder(path: string): string {
+  if (!path) return "找不到 iCloud 云盘";
+  const cloud = path.match(/\/Library\/Mobile Documents\/com~apple~CloudDocs(\/.*)?$/);
+  if (cloud) {
+    const rest = (cloud[1] ?? "").split("/").filter(Boolean);
+    return ["iCloud 云盘", ...rest].join(" › ");
+  }
+  return path.replace(/^\/Users\/[^/]+/, "~");
+}
+
+/** Swaps a button's icon for a spinner while its work runs. */
+function setBusy(button: HTMLButtonElement, on: boolean) {
+  const glyph = button.querySelector("i");
+  if (on) {
+    if (glyph && !button.dataset.icon) {
+      button.dataset.icon = glyph.className;
+      glyph.className = "ri-loader-4-line spin";
+    }
+    button.setAttribute("aria-busy", "true");
+    button.disabled = true;
+    return;
+  }
+  if (glyph && button.dataset.icon) glyph.className = button.dataset.icon;
+  delete button.dataset.icon;
+  button.removeAttribute("aria-busy");
+  button.disabled = false;
+}
+
+function passwordRules() {
+  return {
+    min: syncStatus?.minPasswordLen ?? 10,
+    max: syncStatus?.maxPasswordLen ?? 32,
+    symbols: syncStatus?.passwordSymbols ?? "!@#$%^&*-_+=.?",
+  };
+}
+
 /** The same rules the backend applies when a new password is set. */
 function checkNewPassword(value: string): string | null {
-  const min = vaultStatus?.minPasswordLen ?? 10;
-  const max = vaultStatus?.maxPasswordLen ?? 32;
-  const symbols = vaultStatus?.passwordSymbols ?? "!@#$%^&*-_+=.?";
+  const { min, max, symbols } = passwordRules();
   if (!value) return "密码不能为空。";
   for (const char of value) {
     if (!/[A-Za-z0-9]/.test(char) && !symbols.includes(char)) {
@@ -993,6 +1059,24 @@ function checkNewPassword(value: string): string | null {
   return null;
 }
 
+type PasswordRequest = {
+  title: string;
+  note: string;
+  /** A new password: check the rules and ask for it twice. */
+  fresh: boolean;
+  confirmLabel: string;
+  /** A secondary way out, such as "start a new one instead". */
+  alt?: string;
+  /** Runs with the dialog still open, so a wrong password can be retyped. */
+  action: (password: string) => Promise<void>;
+};
+
+type PasswordOutcome = "done" | "alt" | "cancel";
+
+let passwordRequest: PasswordRequest | null = null;
+let passwordSettle: ((outcome: PasswordOutcome) => void) | null = null;
+let passwordWorking = false;
+
 function paintVaultPasswordToggle(shown: boolean) {
   const button = document.querySelector<HTMLButtonElement>("#toggle-vault-password")!;
   button.replaceChildren(icon(shown ? "eye-off-line" : "eye-line"));
@@ -1000,218 +1084,371 @@ function paintVaultPasswordToggle(shown: boolean) {
   button.title = shown ? "隐藏密码" : "显示密码";
 }
 
-function askVaultPassword(title: string, note: string, enforce: boolean): Promise<string | null> {
+function showPasswordError(text: string) {
+  vaultPasswordError.textContent = text;
+  vaultPasswordError.hidden = false;
+}
+
+function askPassword(request: PasswordRequest): Promise<PasswordOutcome> {
   return new Promise((resolve) => {
-    passwordResolve?.(null);
-    passwordResolve = resolve;
-    passwordEnforce = enforce;
-    vaultPasswordTitle.textContent = title;
-    vaultPasswordNote.textContent = note;
+    passwordSettle?.("cancel");
+    passwordRequest = request;
+    passwordSettle = resolve;
+    const { min, max, symbols } = passwordRules();
+    vaultPasswordTitle.textContent = request.title;
+    vaultPasswordNote.textContent = request.note;
     vaultPasswordError.hidden = true;
     vaultPasswordInput.value = "";
+    vaultPasswordAgain.value = "";
     vaultPasswordInput.type = "password";
+    vaultPasswordAgain.type = "password";
     paintVaultPasswordToggle(false);
-    vaultPasswordHelp.textContent = enforce
-      ? `${vaultStatus?.minPasswordLen ?? 10}–${vaultStatus?.maxPasswordLen ?? 32} 个字符；字母和数字都要有，符号只能用 ${vaultStatus?.passwordSymbols ?? "!@#$%^&*-_+=.?"}`
-      : "打开旧备份时不检查新密码规则。";
+    vaultPasswordAgainField.hidden = !request.fresh;
+    vaultPasswordHelp.hidden = !request.fresh;
+    vaultPasswordHelp.textContent = request.fresh
+      ? `${min}–${max} 个字符，字母和数字都要有，符号只能用 ${symbols}。忘了它就没法在新的 Mac 上加入同步，请记好。`
+      : "";
+    vaultPasswordAlt.hidden = !request.alt;
+    vaultPasswordAlt.textContent = request.alt ?? "";
+    vaultPasswordSubmit.querySelector("span")!.textContent = request.confirmLabel;
     vaultPasswordDialog.showModal();
     vaultPasswordInput.focus();
   });
 }
 
-function settleVaultPassword(value: string | null) {
-  const resolve = passwordResolve;
-  passwordResolve = null;
+function finishPassword(outcome: PasswordOutcome) {
+  const settle = passwordSettle;
+  passwordSettle = null;
+  passwordRequest = null;
   vaultPasswordInput.value = "";
+  vaultPasswordAgain.value = "";
   if (vaultPasswordDialog.open) vaultPasswordDialog.close();
-  resolve?.(value);
+  settle?.(outcome);
 }
 
 vaultPasswordForm.addEventListener("submit", (event) => {
   event.preventDefault();
+  const request = passwordRequest;
+  if (!request || passwordWorking) return;
   const value = vaultPasswordInput.value;
-  if (passwordEnforce) {
-    const problem = checkNewPassword(value);
-    if (problem) {
-      vaultPasswordError.textContent = problem;
-      vaultPasswordError.hidden = false;
-      return;
-    }
-  } else if (!value) {
-    vaultPasswordError.textContent = "请输入密码。";
-    vaultPasswordError.hidden = false;
+  const problem = request.fresh
+    ? checkNewPassword(value) ?? (value === vaultPasswordAgain.value ? null : "两次输入的密码不一样。")
+    : value ? null : "请输入同步密码。";
+  if (problem) {
+    showPasswordError(problem);
     return;
   }
-  settleVaultPassword(value);
+  passwordWorking = true;
+  vaultPasswordError.hidden = true;
+  setBusy(vaultPasswordSubmit, true);
+  vaultPasswordAlt.disabled = true;
+  void request.action(value)
+    .then(() => finishPassword("done"))
+    .catch((error: unknown) => {
+      showPasswordError(errorText(error));
+      vaultPasswordInput.select();
+    })
+    .finally(() => {
+      passwordWorking = false;
+      setBusy(vaultPasswordSubmit, false);
+      vaultPasswordAlt.disabled = false;
+    });
 });
 
-document.querySelector("#close-vault-password")!.addEventListener("click", () => settleVaultPassword(null));
-document.querySelector("#vault-password-cancel")!.addEventListener("click", () => settleVaultPassword(null));
+function cancelPassword() {
+  if (!passwordWorking) finishPassword("cancel");
+}
+
+document.querySelector("#close-vault-password")!.addEventListener("click", cancelPassword);
+document.querySelector("#vault-password-cancel")!.addEventListener("click", cancelPassword);
+vaultPasswordAlt.addEventListener("click", () => {
+  if (!passwordWorking) finishPassword("alt");
+});
+vaultPasswordDialog.addEventListener("cancel", (event) => {
+  // 正在解密或加密时不让 Esc 关掉，免得结果回来时没地方显示。
+  if (passwordWorking) event.preventDefault();
+});
 vaultPasswordDialog.addEventListener("close", () => {
-  if (passwordResolve) settleVaultPassword(null);
+  if (passwordSettle) finishPassword("cancel");
 });
 document.querySelector<HTMLButtonElement>("#toggle-vault-password")!.addEventListener("click", () => {
   const show = vaultPasswordInput.type === "password";
   vaultPasswordInput.type = show ? "text" : "password";
+  vaultPasswordAgain.type = show ? "text" : "password";
   paintVaultPasswordToggle(show);
 });
 
-function vaultProblem(error: unknown) {
-  vaultError.hidden = false;
-  vaultError.textContent = errorText(error);
+function syncNeedsAttention(): boolean {
+  if (!syncStatus?.enabled) return false;
+  return syncStatus.phase === "locked"
+    || syncStatus.phase === "error"
+    || Boolean(syncReportShown?.notes.length);
 }
 
-function paintVault() {
-  const status = vaultStatus;
-  if (!status) return;
-  vaultPath.textContent = status.folder || "找不到 iCloud Drive";
-  if (!status.available) {
-    vaultHelp.textContent = "找不到这个文件夹。点“文件夹”可以换一个目录，比如 iCloud Drive 里的其他位置。";
-  } else if (status.configured) {
-    vaultHelp.textContent = `已配置「${status.label || "未命名"}」，当前第 ${status.revision} 版。密码${status.unlocked ? "已解锁" : "按需从这台 Mac 的钥匙串读取"}。`;
-  } else {
-    vaultHelp.textContent = "第一次备份时会让你设一个密码；其他 Mac 恢复这份配置时要用它。密码只保存在各自的钥匙串里。";
+function noteText(note: SyncNote, from: string): string {
+  const name = note.tunnelName;
+  if (note.kind === "loginKept") {
+    return `${name}：两台 Mac 都改过${note.fields.join("、")}，保留了这台 Mac 的。需要的话请手动改成一致。`;
   }
-  vaultBackupButton.disabled = vaultBusy;
+  if (note.kind === "settingsReplaced") {
+    return `${name}：两台 Mac 同时改了转发设置，采用了「${from}」较新的那次。`;
+  }
+  if (note.kind === "keptDeleted") {
+    return `${name}：「${from}」删除了它，但它在这台 Mac 上正在运行或改过，所以保留了。`;
+  }
+  return `${name}：这台 Mac 删除过它，但「${from}」之后又改了它，所以恢复了。`;
 }
 
-async function paintVaultBackups() {
-  const entries = await invoke<BackupEntry[]>("vault_backups");
-  vaultList.replaceChildren();
-  if (!entries.length) {
-    const empty = document.createElement("p");
-    empty.className = "vault-empty";
-    empty.textContent = "还没有备份。";
-    vaultList.append(empty);
+function paintSyncReport() {
+  const report = syncReportShown;
+  syncReport.replaceChildren();
+  if (!report || !syncStatus?.enabled) {
+    syncReport.hidden = true;
     return;
   }
-  for (const entry of entries) {
-    const row = document.createElement("div");
-    row.className = "vault-row";
-    const tile = document.createElement("span");
-    tile.className = "tile";
-    tile.append(icon("file-settings-line"));
-    const name = document.createElement("div");
-    name.className = "vault-name";
-    const label = document.createElement("strong");
-    label.textContent = entry.label || "未命名配置";
-    const meta = document.createElement("span");
-    meta.className = "vault-meta";
-    meta.textContent = `${entry.device || "未知设备"} · ${vaultTime(entry.savedAt)} · 第 ${entry.revision} 版`;
-    name.append(label, meta);
-    const restore = document.createElement("button");
-    restore.type = "button";
-    restore.textContent = "恢复";
-    restore.disabled = vaultBusy;
-    restore.addEventListener("click", () => void restoreBackup(entry));
-    row.append(tile, name, restore);
-    vaultList.append(row);
-  }
-}
-
-async function refreshVault() {
-  try {
-    vaultStatus = await invoke<VaultStatus>("vault_status");
-    paintVault();
-    await paintVaultBackups();
-  } catch (error) {
-    vaultProblem(error);
-  }
-}
-
-async function backupNow(password: string | null = null) {
-  if (vaultBusy) return;
-  vaultBusy = true;
-  vaultError.hidden = true;
-  vaultNote.hidden = true;
-  paintVault();
-  try {
-    const status = await invoke<VaultStatus>("vault_backup", { password, label: "" });
-    vaultStatus = status;
-    await paintVaultBackups();
-    vaultNote.hidden = false;
-    vaultNote.textContent = `已备份第 ${status.revision} 版。`;
-  } catch (error) {
-    if (errorText(error) === NEED_PASSWORD) {
-      const first = !vaultStatus?.configured;
-      const value = await askVaultPassword(
-        first ? "设置备份密码" : "输入备份密码",
-        first ? "其他 Mac 恢复这份配置时要用这个密码。" : "这台 Mac 的钥匙串里没有这份配置的密码。",
-        first,
-      );
-      vaultBusy = false;
-      paintVault();
-      if (value !== null) await backupNow(value);
-      return;
+  syncReport.hidden = false;
+  syncReport.classList.toggle("warn", report.notes.length > 0);
+  const head = document.createElement("div");
+  head.className = "sync-report-head";
+  const parts: string[] = [];
+  if (report.added) parts.push(`新增 ${report.added} 条`);
+  if (report.updated) parts.push(`更新 ${report.updated} 条`);
+  if (report.removed) parts.push(`移除 ${report.removed} 条`);
+  const line = document.createElement("p");
+  line.textContent = parts.length
+    ? `已合并「${report.from}」的改动：${parts.join("，")}。`
+    : `已合并「${report.from}」的改动。`;
+  const close = document.createElement("button");
+  close.type = "button";
+  close.className = "icon small";
+  close.title = "知道了";
+  close.setAttribute("aria-label", "知道了");
+  close.append(icon("close-line"));
+  close.addEventListener("click", () => {
+    syncReportShown = null;
+    paintSync();
+  });
+  head.append(icon(report.notes.length ? "error-warning-line" : "check-line"), line, close);
+  syncReport.append(head);
+  if (report.notes.length) {
+    const notes = document.createElement("ul");
+    for (const note of report.notes) {
+      const item = document.createElement("li");
+      item.textContent = noteText(note, report.from);
+      notes.append(item);
     }
-    vaultProblem(error);
+    syncReport.append(notes);
+  }
+}
+
+function paintSync() {
+  navSyncDot.hidden = !syncNeedsAttention();
+  const status = syncStatus;
+  if (!status) return;
+  const phase: SyncPhase = status.enabled ? status.phase : "off";
+  syncCard.dataset.phase = phase;
+  syncGlyph.className = phase === "off" ? "ri-cloud-off-line" : "ri-cloud-line";
+  syncState.className = `sync-state ${phase}`;
+  syncState.textContent = phase === "off"
+    ? status.available ? "未开启" : "未开启 · 找不到 iCloud 云盘"
+    : phase === "locked"
+      ? "需要输入同步密码"
+      : phase === "error"
+        ? "同步没有完成"
+        : status.lastSync ? `已同步 · ${relativeTime(status.lastSync)}` : "已开启";
+  syncState.title = status.enabled && status.lastSync
+    ? `上次同步：${new Date(status.lastSync * 1000).toLocaleString("zh-CN")}`
+    : "";
+
+  syncEnableButton.hidden = phase !== "off";
+  syncNowButton.hidden = phase === "off" || phase === "locked";
+  syncUnlockButton.hidden = phase !== "locked";
+  syncDisableButton.hidden = phase === "off";
+  syncIntro.hidden = phase !== "off";
+  for (const button of [syncEnableButton, syncNowButton, syncUnlockButton, syncDisableButton, syncFolderButton]) {
+    if (!button.hasAttribute("aria-busy")) button.disabled = syncWorking;
+  }
+
+  syncFolder.textContent = prettyFolder(status.folder);
+  syncFolder.title = status.folder;
+
+  const problem = syncCommandError || (phase === "error" ? status.message : "");
+  syncError.hidden = !problem;
+  syncError.textContent = problem;
+
+  syncDevices.replaceChildren();
+  syncDevices.hidden = phase === "off" || status.devices.length === 0;
+  for (const device of status.devices) {
+    const item = document.createElement("li");
+    item.className = "sync-device";
+    const name = document.createElement("span");
+    name.className = "sync-device-name";
+    name.textContent = device.name;
+    item.append(icon("macbook-line"), name);
+    if (device.thisMac) {
+      const here = document.createElement("span");
+      here.className = "here";
+      here.textContent = "这台 Mac";
+      item.append(here);
+    }
+    const when = document.createElement("span");
+    when.className = "sync-device-time";
+    when.textContent = device.savedAt ? `${relativeTime(device.savedAt)}更新` : "";
+    item.append(when);
+    syncDevices.append(item);
+  }
+  if (status.devices.length > 0 && status.devices.every((device) => device.thisMac)) {
+    const hint = document.createElement("li");
+    hint.className = "sync-hint";
+    hint.textContent = "在另一台 Mac 上打开 TailTunnel，开启同步并输入同一个密码，它就会出现在这里。";
+    syncDevices.append(hint);
+  }
+  paintSyncReport();
+}
+
+function takeSyncEvent(event: SyncEvent) {
+  syncStatus = event.status;
+  const report = event.report;
+  if (report?.from && (report.added || report.updated || report.removed || report.notes.length)) {
+    syncReportShown = report;
+  }
+  if (!event.status.enabled) syncReportShown = null;
+  paintSync();
+}
+
+async function refreshSync() {
+  try {
+    syncStatus = await invoke<SyncStatus>("sync_status");
+    syncCommandError = "";
+  } catch (error) {
+    syncCommandError = errorText(error);
+  }
+  paintSync();
+}
+
+/** Runs one user action on the sync card. Returns whether it succeeded. */
+async function runSyncAction(button: HTMLButtonElement, work: () => Promise<void>): Promise<boolean> {
+  if (syncWorking) return false;
+  syncWorking = true;
+  syncCommandError = "";
+  setBusy(button, true);
+  paintSync();
+  try {
+    await work();
+    return true;
+  } catch (error) {
+    // 缺密码会让卡片切到“需要输入同步密码”，不必再报错。
+    if (errorText(error) !== NEED_PASSWORD) syncCommandError = errorText(error);
+    return false;
   } finally {
-    vaultBusy = false;
-    paintVault();
+    syncWorking = false;
+    setBusy(button, false);
+    paintSync();
   }
 }
 
-async function restoreBackup(entry: BackupEntry) {
-  if (vaultBusy) return;
-  const name = entry.label || "这份备份";
-  if (!window.confirm(`用「${name}」更新本机配置？\n\n备份里的转发设置会覆盖本机同名隧道；本机已有的密码和私钥不会被覆盖，有冲突时会列出来。`)) return;
-  vaultBusy = true;
-  vaultError.hidden = true;
-  vaultNote.hidden = true;
-  paintVault();
-  try {
-    let report: RestoreReport;
-    try {
-      report = await invoke<RestoreReport>("vault_restore", { file: entry.file, password: null });
-    } catch (error) {
-      if (errorText(error) !== NEED_PASSWORD) throw error;
-      const value = await askVaultPassword("解开备份", "这份备份需要密码。", false);
-      if (value === null) return;
-      report = await invoke<RestoreReport>("vault_restore", { file: entry.file, password: value });
-    }
-    applySnapshot(report.snapshot);
-    vaultStatus = await invoke<VaultStatus>("vault_status");
-    await paintVaultBackups();
-    const summary = `已从备份更新：新增 ${report.added} 条，覆盖 ${report.updated} 条。`;
-    if (report.conflicts.length) {
-      const lines = report.conflicts
-        .map((conflict) => `${conflict.tunnelName}：${conflict.fields.join("、")}`)
-        .join("\n");
-      vaultNote.hidden = false;
-      vaultNote.textContent = `${summary}\n这些登录信息本机已有，没有覆盖，请手动处理：\n${lines}`;
-      window.alert(`备份里有和本机不一致的登录信息，已保留本机设置，请手动处理：\n\n${lines}`);
-    } else {
-      vaultNote.hidden = false;
-      vaultNote.textContent = summary;
-    }
-  } catch (error) {
-    vaultProblem(error);
-  } finally {
-    vaultBusy = false;
-    paintVault();
+async function enableSync() {
+  let vaults: CloudVault[] = [];
+  const found = await runSyncAction(syncEnableButton, async () => {
+    vaults = await invoke<CloudVault[]>("sync_inspect");
+  });
+  if (!found) return;
+  const existing = vaults[0];
+  if (existing) {
+    const outcome = await askPassword({
+      title: `加入「${existing.label || "我的隧道"}」`,
+      note: `iCloud 里已有 ${existing.devices.join("、")} 同步的隧道配置。输入当时设的同步密码就能加入；这台 Mac 已有的隧道会合并进去，不会被删除。`,
+      fresh: false,
+      confirmLabel: "加入",
+      alt: "不加入，新建一份",
+      action: async (password) => {
+        syncStatus = await invoke<SyncStatus>("sync_enable", { password, join: existing.vaultId });
+        paintSync();
+      },
+    });
+    if (outcome !== "alt") return;
   }
+  await askPassword({
+    title: "设置同步密码",
+    note: existing
+      ? "会新建一份独立的同步配置，和 iCloud 里已有的那份互不影响。"
+      : "其他 Mac 加入同步时要输入这个密码。它只存在每台 Mac 自己的钥匙串里。",
+    fresh: true,
+    confirmLabel: "开启同步",
+    action: async (password) => {
+      syncStatus = await invoke<SyncStatus>("sync_enable", { password, join: null });
+      paintSync();
+    },
+  });
 }
 
-vaultBackupButton.addEventListener("click", () => void backupNow());
+syncEnableButton.addEventListener("click", () => void enableSync());
 
-document.querySelector<HTMLButtonElement>("#pick-vault-folder")!.addEventListener("click", () => {
-  vaultError.hidden = true;
-  void open({
-    title: "备份文件夹",
-    directory: true,
-    multiple: false,
-    defaultPath: vaultStatus?.folder || undefined,
-  }).then(async (picked) => {
-    if (typeof picked !== "string") return;
-    try {
-      vaultStatus = await invoke<VaultStatus>("vault_set_folder", { folder: picked });
-      paintVault();
-      await paintVaultBackups();
-    } catch (error) {
-      vaultProblem(error);
-    }
-  }).catch((error: unknown) => vaultProblem(error));
+syncNowButton.addEventListener("click", () => {
+  void runSyncAction(syncNowButton, async () => {
+    syncStatus = await invoke<SyncStatus>("sync_now");
+  }).then((done) => {
+    if (done) flashLabel(syncNowButton, "已同步");
+  });
 });
+
+syncUnlockButton.addEventListener("click", () => {
+  void askPassword({
+    title: "输入同步密码",
+    note: "这台 Mac 的钥匙串里没有能用的同步密码。输入一次，之后会记在这台 Mac 的钥匙串里。",
+    fresh: false,
+    confirmLabel: "解锁",
+    action: async (password) => {
+      syncStatus = await invoke<SyncStatus>("sync_unlock", { password });
+      paintSync();
+    },
+  });
+});
+
+syncDisableButton.addEventListener("click", () => {
+  void (async () => {
+    const confirmed = await confirm(
+      "这台 Mac 会停止同步，本机的隧道保持不变；iCloud 里的加密文件和其他 Mac 不受影响。这台 Mac 记住的同步密码会从钥匙串删除。",
+      { title: "关闭 iCloud 同步", kind: "warning", okLabel: "关闭同步", cancelLabel: "取消" },
+    );
+    if (!confirmed) return;
+    await runSyncAction(syncDisableButton, async () => {
+      syncStatus = await invoke<SyncStatus>("sync_disable");
+      syncReportShown = null;
+    });
+  })();
+});
+
+syncFolderButton.addEventListener("click", () => {
+  void (async () => {
+    const picked = await open({
+      title: "同步文件夹",
+      directory: true,
+      multiple: false,
+      defaultPath: syncStatus?.folder || undefined,
+    });
+    if (typeof picked !== "string") return;
+    if (syncStatus?.enabled) {
+      const confirmed = await confirm(
+        "换文件夹后，其他 Mac 也要选同一个文件夹才能继续同步。",
+        { title: "更改同步位置", kind: "info", okLabel: "更改", cancelLabel: "取消" },
+      );
+      if (!confirmed) return;
+    }
+    await runSyncAction(syncFolderButton, async () => {
+      syncStatus = await invoke<SyncStatus>("sync_set_folder", { folder: picked });
+    });
+  })().catch((error: unknown) => {
+    syncCommandError = errorText(error);
+    paintSync();
+  });
+});
+
+void listen<SyncEvent>("sync-changed", (event) => takeSyncEvent(event.payload));
+window.setInterval(() => {
+  if (document.body.dataset.view === "settings") paintSync();
+}, 30_000);
+void refreshSync();
 
 document.querySelector<HTMLButtonElement>("#create")!.addEventListener("click", () => openEditor());
 
@@ -1246,7 +1483,7 @@ function showView(view: AppView) {
   document.querySelector("#nav-tailscale")!.classList.toggle("current", view === "tailscale");
   document.querySelector("#nav-settings")!.classList.toggle("current", view === "settings");
   if (view === "tailscale") void refreshMachines(true);
-  if (view === "settings") void refreshVault();
+  if (view === "settings") void refreshSync();
 }
 
 function paintTailscale(report: TailscaleReport) {

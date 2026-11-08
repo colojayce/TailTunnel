@@ -14,7 +14,7 @@
       <p class="brand"><img class="brand-mark" src="/logo.png" alt="" />TailTunnel</p>
       <button id="nav-tunnels" class="nav-item current" type="button"><i class="ri-route-line" aria-hidden="true"></i>隧道</button>
       <button id="nav-tailscale" class="nav-item" type="button"><i class="ri-global-line" aria-hidden="true"></i>Tailscale</button>
-      <button id="nav-settings" class="nav-item" type="button"><i class="ri-settings-3-line" aria-hidden="true"></i>设置</button>
+      <button id="nav-settings" class="nav-item" type="button"><i class="ri-settings-3-line" aria-hidden="true"></i>设置<span id="nav-sync-dot" class="nav-dot" title="iCloud 同步需要处理" hidden></span></button>
     </nav>
     <div class="workspace">
     <header class="top">
@@ -49,6 +49,7 @@
       <div id="tailscale-body" class="machines"></div>
     </section>
     <section id="view-settings" class="panel" hidden>
+      <h2 class="section-title">常规</h2>
       <div class="card setting-row">
         <span class="tile"><i class="ri-file-settings-line" aria-hidden="true"></i></span>
         <div class="setting-text">
@@ -63,24 +64,35 @@
           <span>系统通知</span>
           <p class="setting-help">隧道断开、重连成功或最终失败时提醒；窗口在前台时不打扰。</p>
         </span>
-        <input id="notify-toggle" type="checkbox" />
+        <input id="notify-toggle" class="switch" type="checkbox" />
       </label>
       <p id="settings-error" class="form-error" hidden></p>
-      <div class="card setting-row vault-head">
-        <span class="tile"><i class="ri-upload-2-line" aria-hidden="true"></i></span>
-        <div class="setting-text">
-          <span>加密备份</span>
-          <p id="vault-path" class="path"></p>
-          <p id="vault-help" class="setting-help">把这份配置加密后放进 iCloud Drive，其他 Mac 可以恢复。密码只保存在这台 Mac 的钥匙串里。</p>
+
+      <h2 class="section-title">同步</h2>
+      <section id="sync-card" class="card sync" data-phase="off" aria-labelledby="sync-title">
+        <div class="setting-row sync-head">
+          <span class="tile sync-tile"><i id="sync-glyph" class="ri-cloud-off-line" aria-hidden="true"></i></span>
+          <div class="setting-text">
+            <span id="sync-title">iCloud 同步</span>
+            <p id="sync-state" class="sync-state" role="status">正在读取</p>
+          </div>
+          <div class="setting-actions">
+            <button id="sync-now" class="ghost" type="button" hidden><i class="ri-refresh-line" aria-hidden="true"></i><span>立即同步</span></button>
+            <button id="sync-unlock" class="accent" type="button" hidden><i class="ri-lock-password-line" aria-hidden="true"></i><span>输入密码</span></button>
+            <button id="sync-enable" class="primary" type="button" hidden><i class="ri-cloud-line" aria-hidden="true"></i><span>开启同步</span></button>
+          </div>
         </div>
-        <div class="setting-actions">
-          <button id="pick-vault-folder" type="button"><i class="ri-folder-open-line" aria-hidden="true"></i><span>文件夹</span></button>
-          <button id="vault-backup" class="primary" type="button"><i class="ri-key-2-line" aria-hidden="true"></i><span>立即备份</span></button>
-        </div>
-      </div>
-      <div id="vault-list" class="card vault-list"></div>
-      <p id="vault-note" class="note" hidden></p>
-      <p id="vault-error" class="form-error" hidden></p>
+        <p id="sync-intro" class="sync-intro">隧道配置加密后放进 iCloud 云盘，在你的几台 Mac 之间自动保持一致。同步密码只存在每台 Mac 的钥匙串里，iCloud 上只有密文。</p>
+        <ul id="sync-devices" class="sync-devices" aria-label="参与同步的 Mac"></ul>
+        <div id="sync-report" class="sync-report" role="status" hidden></div>
+        <p id="sync-error" class="form-error sync-error" hidden></p>
+        <footer class="sync-foot">
+          <i class="ri-folder-open-line" aria-hidden="true"></i>
+          <span id="sync-folder" class="sync-folder"></span>
+          <button id="sync-folder-pick" class="ghost small" type="button">更改位置</button>
+          <button id="sync-disable" class="danger small" type="button" hidden>关闭同步</button>
+        </footer>
+      </section>
     </section>
     </div>
     </div>
@@ -138,7 +150,7 @@
           </label>
         </div>
         <label class="jump-toggle">
-          <input id="use-jump" type="checkbox" />
+          <input id="use-jump" class="switch" type="checkbox" />
           <span>经跳板连接</span>
         </label>
         <div id="jump-fields" class="fields jump-fields" hidden>
@@ -174,7 +186,7 @@
           </label>
         </div>
         <label class="jump-toggle">
-          <input id="auto-reconnect" type="checkbox" />
+          <input id="auto-reconnect" class="switch" type="checkbox" />
           <span>断开后自动重连</span>
         </label>
         <div class="forward-head">
@@ -204,20 +216,27 @@
         </header>
         <div class="sheet-body">
           <p id="vault-password-note" class="note"></p>
-          <label class="wide">
-            密码
-            <span class="password-line">
-              <input id="vault-password-input" type="password" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" />
-              <button id="toggle-vault-password" class="icon" type="button" aria-label="显示密码"><i class="ri-eye-line" aria-hidden="true"></i></button>
-            </span>
-          </label>
+          <div class="password-fields">
+            <label class="wide">
+              同步密码
+              <span class="password-line">
+                <input id="vault-password-input" type="password" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" />
+                <button id="toggle-vault-password" class="icon" type="button" aria-label="显示密码" title="显示密码"><i class="ri-eye-line" aria-hidden="true"></i></button>
+              </span>
+            </label>
+            <label id="vault-password-again-field" class="wide" hidden>
+              再输一次
+              <input id="vault-password-again" type="password" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" />
+            </label>
+          </div>
           <p id="vault-password-help" class="setting-help"></p>
           <p id="vault-password-error" class="form-error" hidden></p>
         </div>
         <footer class="sheet-foot">
+          <button id="vault-password-alt" class="ghost" type="button" hidden></button>
           <span class="spacer"></span>
           <button id="vault-password-cancel" type="button">取消</button>
-          <button class="primary" type="submit"><i class="ri-check-line" aria-hidden="true"></i><span>确定</span></button>
+          <button id="vault-password-submit" class="primary" type="submit"><i class="ri-check-line" aria-hidden="true"></i><span>确定</span></button>
         </footer>
       </form>
     </dialog>

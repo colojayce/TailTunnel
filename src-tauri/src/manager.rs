@@ -216,14 +216,30 @@ impl TunnelManager {
         self.tunnels.clone()
     }
 
-    /// Replaces the whole config after a snapshot was merged into it. Running
-    /// tunnels keep their process; restored tunnels start out stopped.
+    /// Tunnels that are running, connecting or waiting to reconnect.
+    pub fn busy_ids(&self) -> std::collections::HashSet<String> {
+        self.tunnels
+            .iter()
+            .filter(|tunnel| {
+                matches!(
+                    self.view(tunnel).status,
+                    TunnelStatus::Running | TunnelStatus::Connecting | TunnelStatus::Waiting
+                )
+            })
+            .map(|tunnel| tunnel.id.clone())
+            .collect()
+    }
+
+    /// Replaces the whole config after another Mac's copy was merged into it.
+    /// Running tunnels keep their process, like after an edit, and new ones
+    /// start out stopped. A merge never drops a busy tunnel; refuse if one
+    /// would go anyway.
     pub fn replace_tunnels(&mut self, tunnels: Vec<Tunnel>) -> Result<(), String> {
-        if self.live.values().any(|live| live.running.is_some()) {
-            return Err("先停掉正在跑的隧道，再恢复备份。".into());
-        }
         let known: std::collections::HashSet<String> =
             tunnels.iter().map(|tunnel| tunnel.id.clone()).collect();
+        if self.busy_ids().iter().any(|id| !known.contains(id)) {
+            return Err("同步时不能移除正在运行的隧道。".into());
+        }
         self.live.retain(|id, _| known.contains(id));
         for tunnel in &tunnels {
             self.live

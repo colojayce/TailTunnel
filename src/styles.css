@@ -255,9 +255,14 @@ button {
 }
 
 button i { font-size: 15px; }
-button:hover { background: var(--cell); }
-button:active { transform: translateY(1px); }
-button:disabled { opacity: 0.4; cursor: default; transform: none; }
+button:hover:not(:disabled) { background: var(--cell); }
+button:active:not(:disabled) { transform: translateY(1px); }
+button:disabled { opacity: 0.45; cursor: default; }
+button[aria-busy="true"] { opacity: 0.75; cursor: progress; }
+button[hidden] { display: none; }
+
+button.small { height: 1.7rem; padding: 0 0.5rem; font-size: 12px; }
+button.icon.small { width: 1.7rem; padding: 0; }
 
 button:focus-visible, input:focus-visible {
   outline: 2px solid var(--accent);
@@ -271,7 +276,9 @@ button.primary {
   box-shadow: 0 1px 0 rgba(255, 255, 255, 0.08) inset, 0 3px 6px -2px rgba(39, 48, 66, 0.4);
 }
 
-button.primary:hover { background: linear-gradient(180deg, #4a5366, #2d374b); }
+/* 用亮度而不是写死的颜色，深色模式下悬停也跟着主题走。 */
+button.primary:hover:not(:disabled) { filter: brightness(1.12); }
+button.primary:active:not(:disabled) { filter: brightness(0.96); }
 
 button.accent {
   border-color: transparent;
@@ -279,7 +286,7 @@ button.accent {
   color: var(--accent-ink);
 }
 
-button.accent:hover { background: var(--accent-hover); }
+button.accent:hover:not(:disabled) { background: var(--accent-hover); }
 
 button.ghost,
 button.icon,
@@ -289,7 +296,8 @@ button.icon,
 }
 
 button.ghost { color: var(--muted); padding: 0 0.55rem; }
-button.ghost:hover { background: var(--cell); color: var(--ink); }
+button.ghost:hover:not(:disabled) { background: var(--cell); color: var(--ink); }
+button.ghost.small { padding: 0 0.5rem; }
 
 button.icon {
   width: 2rem;
@@ -308,7 +316,7 @@ button.danger {
   padding: 0 0.55rem;
 }
 
-button.danger:hover { background: var(--bad-soft); }
+button.danger:hover:not(:disabled) { background: var(--bad-soft); }
 
 /* 隧道列表 */
 
@@ -832,84 +840,183 @@ button.copy i { font-size: 14px; }
 
 .form-error[hidden] { display: none; }
 
-/* 加密备份 */
+/* iCloud 同步 */
+
+.section-title {
+  margin: 1.4rem 0 0.55rem 0.15rem;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.section-title:first-child { margin-top: 0.35rem; }
 
 .setting-actions {
   display: flex;
   flex: none;
+  align-items: center;
   gap: 0.4rem;
 }
 
-#vault-path {
+.sync { overflow: hidden; }
+.sync .setting-row { padding-bottom: 0.75rem; }
+
+.sync-tile { transition: background-color 160ms ease, color 160ms ease; }
+.sync[data-phase="ready"] .sync-tile { background: var(--accent-soft); color: var(--accent); }
+.sync[data-phase="locked"] .sync-tile { background: var(--warn-soft); color: var(--warn); }
+.sync[data-phase="error"] .sync-tile { background: var(--bad-soft); color: var(--bad); }
+
+.sync-state {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
   margin: 0;
   color: var(--muted);
-  word-break: break-all;
-  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+}
+
+.sync-state::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--faint);
+}
+
+.sync-state.ready { color: var(--ink-2); }
+.sync-state.ready::before { background: var(--live); box-shadow: 0 0 0 3px var(--live-soft); }
+.sync-state.locked { color: var(--warn); }
+.sync-state.locked::before { background: var(--warn); }
+.sync-state.error { color: var(--bad); }
+.sync-state.error::before { background: var(--bad); }
+
+.sync-intro {
+  margin: -0.25rem 0.85rem 0.85rem calc(0.85rem + 2.15rem + 0.85rem);
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.sync-intro[hidden],
+.sync-devices[hidden],
+.sync-report[hidden] { display: none; }
+
+.sync-devices {
+  margin: 0 0.85rem 0.85rem;
+  padding: 0.25rem;
+  list-style: none;
+  border-radius: 10px;
+  background: var(--cell);
+}
+
+.sync-device {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  min-width: 0;
+  height: 2.1rem;
+  padding: 0 0.55rem;
+  font-size: 13px;
+}
+
+.sync-device + .sync-device { border-top: 1px solid var(--line); }
+.sync-device > i { color: var(--faint); }
+
+.sync-device-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+}
+
+.sync-device .here { background: var(--surface); }
+
+.sync-device-time {
+  margin-left: auto;
+  flex: none;
+  color: var(--muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.sync-hint {
+  padding: 0.4rem 0.55rem 0.45rem;
+  border-top: 1px dashed var(--line-strong);
+  color: var(--muted);
   font-size: 12px;
   line-height: 1.5;
 }
 
-.vault-head {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  align-items: center;
-  row-gap: 0.85rem;
-  margin-top: 0.85rem;
-}
-
-.vault-head .setting-text { min-width: 0; }
-.vault-head .setting-actions { grid-column: 1 / -1; justify-content: flex-end; }
-
-.vault-list {
-  margin-top: 0.85rem;
-  overflow: hidden;
-}
-
-.vault-list:empty { display: none; }
-
-.vault-row {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
-  gap: 0.85rem;
-  align-items: center;
-  padding: 0.65rem 0.85rem;
-}
-
-.vault-row + .vault-row { border-top: 1px solid var(--line); }
-
-.vault-name {
-  display: flex;
-  flex-direction: column;
-  gap: 0.1rem;
-  min-width: 0;
-}
-
-.vault-name strong {
-  font-weight: 600;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.vault-meta {
-  color: var(--muted);
-  font-size: 12px;
-  line-height: 1.4;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.vault-row .tile { color: var(--muted); }
-
-.vault-empty {
-  padding: 0.85rem;
-  color: var(--muted);
+.sync-report {
+  margin: 0 0.85rem 0.85rem;
+  padding: 0.5rem 0.4rem 0.5rem 0.65rem;
+  border-radius: 10px;
+  background: var(--accent-soft);
+  color: var(--accent);
   font-size: 13px;
 }
 
-#vault-note { white-space: pre-line; }
-#vault-note[hidden] { display: none; }
+.sync-report.warn { background: var(--warn-soft); color: var(--warn); }
+
+.sync-report-head { display: flex; align-items: center; gap: 0.45rem; }
+.sync-report-head p { flex: 1; margin: 0; line-height: 1.45; }
+.sync-report-head button.icon { color: inherit; }
+.sync-report-head button.icon:hover { background: rgba(127, 127, 127, 0.14); color: inherit; }
+
+.sync-report ul {
+  margin: 0.35rem 0 0.1rem;
+  padding: 0 0.5rem 0 1.55rem;
+  color: var(--ink-2);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.sync-report li + li { margin-top: 0.2rem; }
+
+.sync-error { margin: 0 0.85rem 0.85rem; }
+
+.sync-foot {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  min-width: 0;
+  padding: 0.45rem 0.6rem 0.45rem 0.85rem;
+  border-top: 1px solid var(--line);
+  background: var(--canvas);
+  color: var(--faint);
+}
+
+.sync-foot > i { font-size: 14px; }
+
+.sync-folder {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.password-fields { display: grid; gap: 0.8rem; }
+.password-fields + .setting-help { margin-top: 0.55rem; }
+.setting-help[hidden] { display: none; }
+
+.nav-dot {
+  width: 7px;
+  height: 7px;
+  margin-left: auto;
+  border-radius: 50%;
+  background: var(--warn);
+  box-shadow: 0 0 0 3px var(--warn-soft);
+}
+
+.nav-dot[hidden] { display: none; }
 
 /* 编辑弹窗 */
 
@@ -1050,7 +1157,8 @@ button.host-pick .peer { margin-left: auto; }
   cursor: pointer;
 }
 
-.jump-toggle input { width: auto; margin: 0; accent-color: var(--accent); }
+.jump-toggle { gap: 0.6rem; color: var(--ink-2); font-size: 13px; }
+.jump-toggle input:not(.switch) { width: auto; margin: 0; accent-color: var(--accent); }
 
 .jump-fields { margin-top: 0.7rem; }
 .jump-fields[hidden] { display: none; }
@@ -1113,7 +1221,41 @@ button.seg-item.current:hover {
 .setting-help { margin: 0; color: var(--muted); font-size: 12px; font-weight: 400; line-height: 1.5; }
 
 .switch-line { cursor: pointer; flex-direction: row; align-items: center; }
-.switch-line input { width: auto; margin: 0; accent-color: var(--accent); }
+
+/* 复选框画成开关：设置项和编辑弹窗里的开关都用它。 */
+input.switch {
+  appearance: none;
+  position: relative;
+  flex: none;
+  width: 2.15rem;
+  height: 1.3rem;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: var(--line-strong);
+  cursor: pointer;
+  transition: background-color 160ms ease, box-shadow 120ms ease;
+}
+
+input.switch::before {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: calc(1.3rem - 4px);
+  height: calc(1.3rem - 4px);
+  border-radius: 50%;
+  background: #ffffff;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.25), 0 0 0 0.5px rgba(15, 23, 42, 0.06);
+  transition: transform 160ms ease;
+}
+
+input.switch:hover { background: var(--faint); }
+input.switch:checked { background: var(--accent); }
+input.switch:checked:hover { background: var(--accent-hover); }
+input.switch:checked::before { transform: translateX(calc(2.15rem - 1.3rem)); }
+input.switch:focus-visible { outline: 0; box-shadow: 0 0 0 3px var(--accent-soft); }
 
 .via {
   flex: none;
@@ -1171,6 +1313,6 @@ button.seg-item.current:hover {
 @keyframes spin { to { transform: rotate(360deg); } }
 
 @media (prefers-reduced-motion: reduce) {
-  button, input, .row { transition: none; }
+  button, input, .row, input.switch::before, .sync-tile { transition: none; }
   .status.connecting::before, .notice.pending i, i.spin { animation: none; }
 }

@@ -15,6 +15,8 @@
 .ri-arrow-right-line::before { content: "\ea6c"; }
 .ri-check-line::before { content: "\eb7b"; }
 .ri-close-line::before { content: "\eb99"; }
+.ri-cloud-line::before { content: "\eb9d"; }
+.ri-cloud-off-line::before { content: "\eb9f"; }
 .ri-delete-bin-line::before { content: "\ec2a"; }
 .ri-error-warning-line::before { content: "\eca1"; }
 .ri-external-link-line::before { content: "\ecaf"; }
@@ -26,6 +28,7 @@
 .ri-global-line::before { content: "\edcf"; }
 .ri-key-2-line::before { content: "\ee6f"; }
 .ri-loader-4-line::before { content: "\eec6"; }
+.ri-lock-password-line::before { content: "\eed0"; }
 .ri-macbook-line::before { content: "\eee8"; }
 .ri-notification-3-line::before { content: "\ef94"; }
 .ri-pencil-line::before { content: "\efe0"; }

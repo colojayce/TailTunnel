@@ -1,4 +1,5 @@
-pub mod backup;
+pub mod cloud;
+mod icloud;
 mod latency;
 mod manager;
 mod model;
@@ -21,7 +22,7 @@ use tauri_plugin_notification::NotificationExt;
 
 const TRAY_ID: &str = "main";
 
-struct AppState(Mutex<TunnelManager>);
+pub(crate) struct AppState(pub(crate) Mutex<TunnelManager>);
 
 fn kill_ssh_children(app: &AppHandle) {
     let Some(state) = app.try_state::<AppState>() else {
@@ -59,6 +60,7 @@ fn save_tunnel(
         manager.snapshot()
     };
     publish(&app, &snapshot);
+    icloud::kick(&app);
     Ok(snapshot)
 }
 
@@ -73,6 +75,7 @@ fn delete_tunnel(app: AppHandle, state: State<AppState>, id: String) -> Result<S
     }
     let snapshot = lock(&state).snapshot();
     publish(&app, &snapshot);
+    icloud::kick(&app);
     Ok(snapshot)
 }
 
@@ -115,6 +118,7 @@ fn set_config_path(
         manager.snapshot()
     };
     publish(&app, &snapshot);
+    icloud::kick(&app);
     Ok(snapshot)
 }
 
@@ -344,323 +348,6 @@ fn set_notify(app: AppHandle, state: State<AppState>, on: bool) -> Result<Snapsh
     Ok(snapshot)
 }
 
-/// Returned when a password is needed but was not supplied and the Keychain
-/// has none for this password generation.
-const NEED_PASSWORD: &str = "需要密码。";
-
-struct VaultState(Mutex<VaultCache>);
-
-struct VaultCache {
-    app_dir: std::path::PathBuf,
-    settings: backup::VaultSettings,
-    key: Option<vault::VaultKey>,
-}
-
-#[derive(serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-struct VaultStatus {
-    folder: String,
-    available: bool,
-    configured: bool,
-    label: String,
-    revision: u64,
-    unlocked: bool,
-    min_password_len: usize,
-    max_password_len: usize,
-    password_symbols: &'static str,
-}
-
-impl VaultCache {
-    fn folder(&self) -> Result<std::path::PathBuf, String> {
-        self.settings.folder_path()
-    }
-
-    fn status(&self) -> VaultStatus {
-        let folder = self.folder().ok();
-        let available = folder
-            .as_ref()
-            .map(|path| {
-                path.exists()
-                    || path
-                        .parent()
-                        .map(std::path::Path::exists)
-                        .unwrap_or(false)
-            })
-            .unwrap_or(false);
-        VaultStatus {
-            folder: folder
-                .map(|path| path.display().to_string())
-                .unwrap_or_default(),
-            available,
-            configured: self.settings.is_configured(),
-            label: self.settings.label.clone(),
-            revision: self.settings.revision,
-            unlocked: self.key.is_some(),
-            min_password_len: vault::MIN_PASSWORD_LEN,
-            max_password_len: vault::MAX_PASSWORD_LEN,
-            password_symbols: vault::PASSWORD_SYMBOLS,
-        }
-    }
-}
-
-fn vault_lock<'a>(state: &'a State<'a, VaultState>) -> MutexGuard<'a, VaultCache> {
-    state.0.lock().expect("备份状态锁已损坏")
-}
-
-fn device_name() -> String {
-    let from_scutil = Command::new("scutil")
-        .args(["--get", "ComputerName"])
-        .output()
-        .ok()
-        .filter(|output| output.status.success())
-        .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
-        .filter(|name| !name.is_empty());
-    from_scutil
-        .or_else(|| std::env::var("HOSTNAME").ok().filter(|name| !name.is_empty()))
-        .unwrap_or_else(|| "这台 Mac".into())
-}
-
-fn newest_matching_backup(
-    folder: &std::path::Path,
-    vault_id: &str,
-    key_id: &str,
-) -> Result<Option<String>, String> {
-    let entry = backup::list_backups(folder)?.into_iter().find(|entry| {
-        entry.vault_id == vault_id && entry.key_id == key_id
-    });
-    match entry {
-        Some(entry) => backup::read_backup(folder, &entry.file).map(Some),
-        None => Ok(None),
-    }
-}
-
-#[tauri::command]
-fn vault_status(vault_state: State<VaultState>) -> VaultStatus {
-    vault_lock(&vault_state).status()
-}
-
-#[tauri::command]
-fn vault_backups(vault_state: State<VaultState>) -> Result<Vec<backup::BackupEntry>, String> {
-    let cache = vault_lock(&vault_state);
-    backup::list_backups(&cache.folder()?)
-}
-
-#[tauri::command]
-fn vault_set_folder(
-    vault_state: State<VaultState>,
-    folder: String,
-) -> Result<VaultStatus, String> {
-    let mut cache = vault_lock(&vault_state);
-    cache.settings.folder = folder.trim().to_string();
-    backup::save_settings(&cache.app_dir, &cache.settings)?;
-    Ok(cache.status())
-}
-
-#[tauri::command]
-fn vault_forget(vault_state: State<VaultState>) -> Result<VaultStatus, String> {
-    let mut cache = vault_lock(&vault_state);
-    if cache.settings.is_configured() {
-        let _ = secrets::forget(
-            &secrets::KeychainStore,
-            &cache.settings.vault_id,
-            &cache.settings.key_id,
-        );
-    }
-    cache.key = None;
-    Ok(cache.status())
-}
-
-/// Encrypts the current config into a new snapshot. Argon2 runs here, so this
-/// stays off the main thread.
-#[tauri::command(async)]
-fn vault_backup(
-    state: State<AppState>,
-    vault_state: State<VaultState>,
-    password: Option<String>,
-    label: String,
-) -> Result<VaultStatus, String> {
-    let tunnels = lock(&state).tunnels();
-    let payload = model::store_text(&tunnels)?;
-    let mut cache = vault_lock(&vault_state);
-    let folder = cache.folder()?;
-    let provided = password.filter(|value| !value.is_empty());
-
-    let label = {
-        let trimmed = label.trim();
-        if trimmed.is_empty() {
-            if cache.settings.label.is_empty() {
-                "我的配置".to_string()
-            } else {
-                cache.settings.label.clone()
-            }
-        } else {
-            trimmed.to_string()
-        }
-    };
-    let revision = cache.settings.revision + 1;
-    let meta = vault::SealMeta {
-        label: label.clone(),
-        device: device_name(),
-        saved_at: std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|span| span.as_secs())
-            .unwrap_or_default(),
-        revision,
-    };
-
-    let (text, fresh_key, used_password) = match cache.key.as_ref() {
-        Some(key) => (vault::seal_with_key(key, &meta, payload.as_bytes())?, None, None),
-        None if cache.settings.is_configured() => {
-            let password = provided
-                .clone()
-                .or_else(|| {
-                    secrets::recall(
-                        &secrets::KeychainStore,
-                        &cache.settings.vault_id,
-                        &cache.settings.key_id,
-                    )
-                    .ok()
-                    .flatten()
-                })
-                .ok_or_else(|| NEED_PASSWORD.to_string())?;
-            let existing = newest_matching_backup(
-                &folder,
-                &cache.settings.vault_id,
-                &cache.settings.key_id,
-            )?;
-            match existing {
-                Some(text) => {
-                    let opened = vault::open_with_password(&password, &text)?;
-                    let sealed = vault::seal_with_key(&opened.key, &meta, payload.as_bytes())?;
-                    (sealed, Some(opened.key), Some(password))
-                }
-                None => {
-                    let sealed = vault::seal_new_password(
-                        &password,
-                        Some(&cache.settings.vault_id),
-                        &meta,
-                        payload.as_bytes(),
-                    )?;
-                    (sealed.text, Some(sealed.key), Some(password))
-                }
-            }
-        }
-        None => {
-            let password = provided.ok_or_else(|| NEED_PASSWORD.to_string())?;
-            let sealed = vault::seal_new_password(&password, None, &meta, payload.as_bytes())?;
-            (sealed.text, Some(sealed.key), Some(password))
-        }
-    };
-
-    if let Some(key) = &fresh_key {
-        cache.settings.vault_id = key.vault_id().to_string();
-        cache.settings.key_id = key.key_id().to_string();
-    }
-    if let Some(password) = &used_password {
-        // A locked or unavailable Keychain must not block the backup itself;
-        // the password is simply asked for again next time.
-        let _ = secrets::remember(
-            &secrets::KeychainStore,
-            &cache.settings.vault_id,
-            &cache.settings.key_id,
-            password,
-        );
-    }
-    backup::write_backup(&folder, &cache.settings.vault_id, &text)?;
-    cache.settings.label = label;
-    cache.settings.revision = revision;
-    backup::save_settings(&cache.app_dir, &cache.settings)?;
-    if let Some(key) = fresh_key {
-        cache.key = Some(key);
-    }
-    Ok(cache.status())
-}
-
-#[derive(serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-struct RestoreReport {
-    added: usize,
-    updated: usize,
-    conflicts: Vec<sync::CredentialConflict>,
-    snapshot: Snapshot,
-}
-
-/// Merges one snapshot into the local config. Forwarding settings follow the
-/// snapshot; a differing login credential is kept locally and reported.
-#[tauri::command(async)]
-fn vault_restore(
-    app: AppHandle,
-    state: State<AppState>,
-    vault_state: State<VaultState>,
-    file: String,
-    password: Option<String>,
-) -> Result<RestoreReport, String> {
-    let mut cache = vault_lock(&vault_state);
-    let folder = cache.folder()?;
-    let text = backup::read_backup(&folder, &file)?;
-    let header = vault::parse_header(&text)?;
-
-    let opened = match cache.key.take() {
-        Some(key)
-            if key.vault_id() == header.vault_id && key.key_id() == header.key_id =>
-        {
-            vault::open_with_key(key, &text)?
-        }
-        other => {
-            if let Some(key) = other {
-                cache.key = Some(key);
-            }
-            let password = password
-                .filter(|value| !value.is_empty())
-                .or_else(|| {
-                    secrets::recall(
-                        &secrets::KeychainStore,
-                        &header.vault_id,
-                        &header.key_id,
-                    )
-                    .ok()
-                    .flatten()
-                })
-                .ok_or_else(|| NEED_PASSWORD.to_string())?;
-            let opened = vault::open_with_password(&password, &text)?;
-            let _ = secrets::remember(
-                &secrets::KeychainStore,
-                &header.vault_id,
-                &header.key_id,
-                &password,
-            );
-            opened
-        }
-    };
-
-    let incoming = model::parse_store(&opened.payload)?;
-    let outcome = {
-        let local = lock(&state).tunnels();
-        sync::merge_snapshots(&local, &incoming)
-    };
-    let snapshot = {
-        let mut manager = lock(&state);
-        manager.replace_tunnels(outcome.tunnels)?;
-        manager.snapshot()
-    };
-    publish(&app, &snapshot);
-
-    cache.settings.vault_id = opened.header.vault_id.clone();
-    cache.settings.key_id = opened.header.key_id.clone();
-    cache.settings.label = opened.header.label.clone();
-    // 恢复旧备份时不要把版本号退回去，否则下一次备份会比已有的还旧。
-    cache.settings.revision = cache.settings.revision.max(opened.header.revision);
-    cache.key = Some(opened.key);
-    backup::save_settings(&cache.app_dir, &cache.settings)?;
-
-    Ok(RestoreReport {
-        added: outcome.added,
-        updated: outcome.updated,
-        conflicts: outcome.conflicts,
-        snapshot,
-    })
-}
-
 #[derive(Clone, serde::Serialize)]
 struct PortNote {
     port: u16,
@@ -888,7 +575,7 @@ fn listeners_on(port: u16) -> Vec<Listener> {
     parse_lsof(&reader.join().unwrap_or_default())
 }
 
-fn publish(app: &AppHandle, snapshot: &Snapshot) {
+pub(crate) fn publish(app: &AppHandle, snapshot: &Snapshot) {
     let _ = app.emit("tunnels-changed", snapshot);
     refresh_tray(app, snapshot);
 }
@@ -1118,13 +805,8 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init())
         .setup(|app| {
             let dir = app.path().app_data_dir()?;
-            let vault_settings = backup::load_settings(&dir);
             app.manage(AppState(Mutex::new(TunnelManager::load(dir.clone())?)));
-            app.manage(VaultState(Mutex::new(VaultCache {
-                app_dir: dir,
-                settings: vault_settings,
-                key: None,
-            })));
+            icloud::manage(app, dir);
             install_tray(app)?;
             Ok(())
         })
@@ -1132,9 +814,14 @@ pub fn run() {
             if window.label() != "main" {
                 return;
             }
-            if let WindowEvent::CloseRequested { api, .. } = event {
-                api.prevent_close();
-                let _ = window.hide();
+            match event {
+                WindowEvent::CloseRequested { api, .. } => {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
+                // 回到窗口时看看别的 Mac 有没有新改动。
+                WindowEvent::Focused(true) => icloud::kick(window.app_handle()),
+                _ => {}
             }
         })
         .invoke_handler(tauri::generate_handler![
@@ -1153,12 +840,13 @@ pub fn run() {
             measure_latency,
             set_notify,
             check_ports,
-            vault_status,
-            vault_backups,
-            vault_set_folder,
-            vault_forget,
-            vault_backup,
-            vault_restore
+            icloud::sync_status,
+            icloud::sync_inspect,
+            icloud::sync_enable,
+            icloud::sync_unlock,
+            icloud::sync_now,
+            icloud::sync_disable,
+            icloud::sync_set_folder
         ])
         .build(tauri::generate_context!())
         .expect("启动 TailTunnel 失败")
