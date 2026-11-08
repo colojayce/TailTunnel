@@ -1,6 +1,6 @@
 [package]
 name = "tailtunnel"
-version = "0.2.0"
+version = "0.3.0"
 description = "在 Mac 上开关多条 SSH 本地转发"
 authors = ["you"]
 edition = "2024"
