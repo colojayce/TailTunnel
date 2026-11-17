@@ -26,27 +26,24 @@ function bar(x: number, y: number, w: number, strong = false): string {
 }
 
 function style(p: string): string {
-  const light = `--base:#fafafa;--hatch:rgba(15,23,42,0.05);--edge:rgba(15,23,42,0.07);--surface:#ffffff;--stroke:rgba(47,42,34,0.08);--tab:#eef1f5;--bar:#e5e9ef;--bar-strong:#cdd4de;--cell:#f1f3f6;--back:#f3f3f4;--icon:#a3abb7;--icon-2:#6b7280;--accent:#3462ad;--shadow:rgb(47,42,34);--shadow-o:0.13;`;
-  const dark = `--base:#26262b;--hatch:rgba(255,255,255,0.035);--edge:rgba(255,255,255,0.06);--surface:#323238;--stroke:rgba(255,255,255,0.06);--tab:#2a2a2f;--bar:#3f3f47;--bar-strong:#52525b;--cell:#2a2a2f;--back:#2c2c31;--icon:#7d828c;--icon-2:#9a9fa8;--accent:#7ea6ea;--shadow:#000000;--shadow-o:0.36;`;
+  // 颜色直接取页面的主题变量：内联 SVG 会继承它们，深浅色切换时插图跟着变。
   return `<style>
-#${p}{${light}}
-#${p}[data-theme="dark"]{${dark}}
-@media (prefers-color-scheme: dark){#${p}[data-theme="auto"]{${dark}}}
-#${p} .base{fill:var(--base)}
-#${p} .hatch-line{stroke:var(--hatch)}
-#${p} .edge{fill:none;stroke:var(--edge)}
-#${p} .surface{fill:var(--surface);stroke:var(--stroke)}
-#${p} .back{fill:var(--back);stroke:var(--stroke)}
-#${p} .tab{fill:var(--tab)}
-#${p} .rule{stroke:var(--stroke)}
-#${p} .bar{fill:var(--bar)}
-#${p} .bar-strong{fill:var(--bar-strong)}
+#${p} .base{fill:var(--cell)}
+#${p} .hatch-line{stroke:var(--line)}
+#${p} .edge{fill:none;stroke:var(--line)}
+#${p} .surface{fill:var(--surface);stroke:var(--line-strong)}
+#${p} .back{fill:var(--cell-hover);stroke:var(--line)}
+#${p} .tab{fill:var(--cell)}
+#${p} .rule{stroke:var(--line)}
+#${p} .bar{fill:var(--line-strong)}
+#${p} .bar-strong{fill:var(--faint)}
 #${p} .cell{fill:var(--cell)}
-#${p} .icon{fill:var(--icon)}
-#${p} .icon-2{fill:var(--icon-2)}
-#${p} .accent{fill:var(--accent)}
-#${p} .on-key{fill:#ffffff}
-#${p} .flood{flood-color:var(--shadow);flood-opacity:var(--shadow-o)}
+#${p} .icon{fill:var(--faint)}
+#${p} .icon-2{fill:var(--muted)}
+#${p} .accent{fill:var(--ink)}
+#${p} .on-key{fill:var(--on-ink)}
+#${p} .key{fill:var(--ink)}
+#${p} .flood{flood-color:var(--art-flood);flood-opacity:0.16}
 @media (prefers-reduced-motion: no-preference){
 #${p} .pop{transform-box:fill-box;transform-origin:center;animation:${p}-pop 520ms cubic-bezier(0.34,1.56,0.64,1) 180ms both}
 }
@@ -64,7 +61,6 @@ function defs(p: string): string {
 <feComposite in="tint" in2="drop" operator="in" result="shade"/>
 <feMerge><feMergeNode in="shade"/><feMergeNode in="SourceGraphic"/></feMerge>
 </filter>
-<linearGradient id="${p}-slate" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#404859"/><stop offset="1" stop-color="#273042"/></linearGradient>
 </defs>`;
 }
 
@@ -129,7 +125,7 @@ ${icon(ICONS.refresh, 127, 92, 11, "on-key")}
 </g>`;
 }
 
-// 读不到 Tailscale：状态卡片中间是连不上的网络图标，右下角是石板灰的电源按键。没有下一步，所以没有强调色。
+// 读不到 Tailscale：状态卡片中间是连不上的网络图标，右下角是墨色的电源按键。没有下一步，所以只用中性色。
 function noTailscale(p: string): string {
   return `<g filter="url(#${p}-shadow)">
 <rect class="back" x="35.5" y="18.5" width="90" height="58" rx="11"/>
@@ -142,17 +138,17 @@ ${icon(ICONS.wifiOff, 79.5, 50, 13, "icon")}
 ${bar(60, 70, 39, true)}
 ${bar(66, 79, 27)}
 <g filter="url(#${p}-shadow)">
-<rect x="114" y="80" width="22" height="20" rx="6" fill="url(#${p}-slate)"/>
+<rect class="key" x="114" y="80" width="22" height="20" rx="6"/>
 ${icon(ICONS.power, 125, 90, 11, "on-key")}
 </g>`;
 }
 
-export function emptyArt(scene: EmptyScene, theme: "light" | "dark" | "auto" = "auto"): string {
+export function emptyArt(scene: EmptyScene): string {
   const p = `tt${Math.random().toString(36).slice(2, 9)}`;
   const body = scene === "no-tunnels"
     ? noTunnels(p)
     : scene === "lonely-tailnet"
       ? lonelyTailnet(p)
       : noTailscale(p);
-  return `<svg id="${p}" data-theme="${theme}" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 120" width="160" height="120" aria-hidden="true">${style(p)}${defs(p)}${board(p)}${body}</svg>`;
+  return `<svg id="${p}" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 120" width="160" height="120" aria-hidden="true">${style(p)}${defs(p)}${board(p)}${body}</svg>`;
 }

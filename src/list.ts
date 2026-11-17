@@ -4,11 +4,13 @@ import "@fontsource/ibm-plex-sans/600.css";
 import "@fontsource/ibm-plex-mono/400.css";
 import "@fontsource/ibm-plex-mono/500.css";
 import "./icons.css";
+import { getVersion } from "@tauri-apps/api/app";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { homeDir } from "@tauri-apps/api/path";
 import { confirm, open, save } from "@tauri-apps/plugin-dialog";
 import { emptyArt, type EmptyScene } from "./empty";
+import { initTheme } from "./theme";
 import { MAX_LOG_CHARS, latencyLines, statusLabel, type AuthMethod, type Forward, type LatencyReport, type LogLine, type LogPage, type PortNote, type Snapshot, type Tunnel, type TunnelStatus } from "./types";
 
 const summary = document.querySelector<HTMLElement>("#summary")!;
@@ -142,6 +144,7 @@ function render() {
   settingsPath.textContent = snapshot.configPath;
   notifyToggle.checked = snapshot.notify;
   syncDock();
+  paintStats();
 
   list.classList.toggle("arrive", !seenArrival);
   seenArrival = true;
@@ -260,13 +263,57 @@ function render() {
 }
 
 const latencyState = new Map<string, LatencyReport | "pending" | string>();
+/** The newest successful measurement this session, shown in the overview strip. */
+let lastLatency: { name: string; report: LatencyReport } | null = null;
+
+function paintStats() {
+  const stat = (id: string) => document.querySelector<HTMLElement>(id)!;
+  const count = snapshot.tunnels.length;
+  stat("#stats").hidden = count === 0;
+  if (count === 0) return;
+
+  const running = runningCount();
+  const connecting = connectingCount();
+  const waiting = waitingCount();
+  const failed = snapshot.tunnels.filter((tunnel) => tunnel.status === "failed").length;
+  stat("#stat-running").textContent = String(running);
+  stat("#stat-total").textContent = `/ ${count}`;
+  const parts: string[] = [];
+  if (connecting > 0) parts.push(`${connecting} 条正在连接`);
+  if (waiting > 0) parts.push(`${waiting} 条等待重连`);
+  if (failed > 0) parts.push(`${failed} 条失败`);
+  stat("#stat-running-box").title = parts.length > 0 ? parts.join(" · ") : running === count ? "全部在跑" : "没有在跑的隧道";
+
+  const ports = snapshot.tunnels.reduce((sum, tunnel) => sum + tunnel.forwards.length, 0);
+  const listening = snapshot.tunnels
+    .filter((tunnel) => tunnel.status === "running")
+    .reduce((sum, tunnel) => sum + tunnel.forwards.length, 0);
+  stat("#stat-ports").textContent = String(ports);
+  stat("#stat-ports-box").title = listening > 0 ? `${listening} 个正在监听` : "没有在监听";
+
+  const value = stat("#stat-latency");
+  const unit = stat("#stat-latency-unit");
+  const box = stat("#stat-latency-box");
+  if (!lastLatency) {
+    value.textContent = "—";
+    unit.hidden = true;
+    box.title = "还没测过：点隧道行上的计时器按钮";
+    return;
+  }
+  const direct = lastLatency.report.direct.avgMs;
+  value.textContent = direct === null ? "不通" : direct < 10 ? direct.toFixed(1) : String(Math.round(direct));
+  unit.hidden = direct === null;
+  box.title = `${lastLatency.name} · 直连`;
+}
 
 async function measureLatency(tunnel: Tunnel) {
   if (latencyState.get(tunnel.id) === "pending") return;
   latencyState.set(tunnel.id, "pending");
   render();
   try {
-    latencyState.set(tunnel.id, await invoke<LatencyReport>("measure_latency", { id: tunnel.id }));
+    const report = await invoke<LatencyReport>("measure_latency", { id: tunnel.id });
+    latencyState.set(tunnel.id, report);
+    lastLatency = { name: tunnel.note || `${tunnel.user}@${tunnel.host}`, report };
   } catch (error) {
     latencyState.set(tunnel.id, errorText(error));
   }
@@ -712,7 +759,6 @@ function syncDock() {
     dockStatus.textContent = "";
     dockStatus.className = "status stopped";
     delete dockStatus.dataset.connectedAt;
-    delete dockStatus.dataset.statusBase;
     dockLines = [];
     logFloor = 0;
     logRequest += 1;
@@ -785,14 +831,18 @@ function fillForwards(target: HTMLElement, forwards: Forward[], compact = false)
 
 function paintStatus(el: HTMLElement, status: TunnelStatus, connectedAt: number | null) {
   el.className = `status ${status}`;
-  const base = statusLabel(status);
-  el.dataset.statusBase = base;
+  const label = document.createElement("span");
+  label.className = "status-label";
+  label.textContent = statusLabel(status);
+  el.replaceChildren(label);
   if (status === "running" && connectedAt) {
     el.dataset.connectedAt = String(connectedAt);
-    el.textContent = `${base} ${formatDuration(Date.now() - connectedAt)}`;
+    const time = document.createElement("span");
+    time.className = "status-time";
+    time.textContent = formatDuration(Date.now() - connectedAt);
+    el.append(time);
   } else {
     delete el.dataset.connectedAt;
-    el.textContent = base;
   }
 }
 
@@ -1793,12 +1843,20 @@ window.setInterval(() => {
   const now = Date.now();
   for (const el of document.querySelectorAll<HTMLElement>("[data-connected-at]")) {
     const at = Number(el.dataset.connectedAt);
-    const base = el.dataset.statusBase ?? "运行中";
-    if (!Number.isFinite(at)) continue;
-    el.textContent = `${base} ${formatDuration(now - at)}`;
+    const time = el.querySelector(".status-time");
+    if (!Number.isFinite(at) || !time) continue;
+    time.textContent = formatDuration(now - at);
   }
 }, 1000);
 
+initTheme();
+void getVersion()
+  .then((version) => {
+    if (typeof version === "string") document.querySelector<HTMLElement>("#app-version")!.textContent = `v${version}`;
+  })
+  .catch(() => {
+    // 读不到版本号时，这一行只显示应用名。
+  });
 void refresh().catch((error: unknown) => {
   summary.textContent = errorText(error);
   summary.className = "info bad";

@@ -3,6 +3,15 @@
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" href="/logo.png" />
+    <script>
+      // 在样式表加载前定好深浅色，避免启动时闪一下。逻辑同 src/theme.ts。
+      (function () {
+        var choice = null;
+        try { choice = localStorage.getItem("tailtunnel-theme"); } catch (e) {}
+        var dark = choice === "dark" || (choice !== "light" && window.matchMedia("(prefers-color-scheme: dark)").matches);
+        document.documentElement.dataset.theme = dark ? "dark" : "light";
+      })();
+    </script>
     <link rel="stylesheet" href="/src/styles.css" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>TailTunnel</title>
@@ -12,8 +21,10 @@
     <div class="shell">
     <nav class="nav" aria-label="菜单">
       <p class="brand"><img class="brand-mark" src="/logo.png" alt="" />TailTunnel</p>
+      <p class="nav-label">工作区</p>
       <button id="nav-tunnels" class="nav-item current" type="button"><i class="ri-route-line" aria-hidden="true"></i>隧道</button>
       <button id="nav-tailscale" class="nav-item" type="button"><i class="ri-global-line" aria-hidden="true"></i>Tailscale</button>
+      <p class="nav-label">应用</p>
       <button id="nav-settings" class="nav-item" type="button"><i class="ri-settings-3-line" aria-hidden="true"></i>设置<span id="nav-sync-dot" class="nav-dot" title="iCloud 同步需要处理" hidden></span></button>
     </nav>
     <div class="workspace">
@@ -28,6 +39,20 @@
       </div>
     </header>
     <div id="view-tunnels" class="view">
+    <section id="stats" class="stats" aria-label="概览" hidden>
+      <div id="stat-running-box" class="stat">
+        <p class="stat-label">运行中</p>
+        <p class="stat-value"><span id="stat-running">0</span><span id="stat-total" class="stat-unit">/ 0</span></p>
+      </div>
+      <div id="stat-ports-box" class="stat">
+        <p class="stat-label">转发端口</p>
+        <p class="stat-value"><span id="stat-ports">0</span></p>
+      </div>
+      <div id="stat-latency-box" class="stat">
+        <p class="stat-label">最近测速</p>
+        <p class="stat-value"><span id="stat-latency">—</span><span id="stat-latency-unit" class="stat-unit" hidden>ms</span></p>
+      </div>
+    </section>
     <div id="list" class="list"></div>
     <section class="dock idle" aria-label="终端">
       <header class="dock-top">
@@ -68,6 +93,20 @@
       </label>
       <p id="settings-error" class="form-error" hidden></p>
 
+      <h2 class="section-title">外观</h2>
+      <div class="card setting-row">
+        <span class="tile"><span class="theme-glyph" aria-hidden="true"></span></span>
+        <div class="setting-text">
+          <span>主题</span>
+          <p class="setting-help">跟随系统，或固定为浅色、深色。</p>
+        </div>
+        <span class="seg" role="group" aria-label="主题">
+          <button class="seg-item" type="button" data-theme-choice="system" aria-pressed="false">跟随系统</button>
+          <button class="seg-item" type="button" data-theme-choice="light" aria-pressed="false">浅色</button>
+          <button class="seg-item" type="button" data-theme-choice="dark" aria-pressed="false">深色</button>
+        </span>
+      </div>
+
       <h2 class="section-title">同步</h2>
       <section id="sync-card" class="card sync" data-phase="off" aria-labelledby="sync-title">
         <div class="setting-row sync-head">
@@ -93,6 +132,15 @@
           <button id="sync-disable" class="danger small" type="button" hidden>关闭同步</button>
         </footer>
       </section>
+
+      <h2 class="section-title">关于</h2>
+      <div class="card setting-row">
+        <span class="tile"><img class="about-mark" src="/logo.png" alt="" /></span>
+        <div class="setting-text">
+          <span>TailTunnel</span>
+        </div>
+        <span id="app-version" class="version" aria-label="版本"></span>
+      </div>
     </section>
     </div>
     </div>
